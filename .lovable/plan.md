@@ -11,5 +11,5 @@
 - Use TanStack Start server functions for authenticated persistence and server-side AI generation; keep Lovable AI credentials and prompt construction off the browser.
 - Store confidential counseling notes in a separate table with owner-only access. Keep incident layers and authorization state in a separate owner-scoped record. Never select counseling notes in drafting functions.
 - Add database grants and row-level security policies for every application table; keep demo scenarios as fictional client-side fixtures rather than saved case records.
-- If team profile information is needed, add only the profile fields confirmed by the user; otherwise use the authenticated account identity without a separate profile table.
+- Add a private team profile for the confirmed fields: church name, leadership team roles, and contact preferences.
 - Use the project's existing Tailwind/shadcn tokens and controls, then verify route behavior, key gates, mobile layout, and the generated draft path.
