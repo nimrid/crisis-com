@@ -14,7 +14,122 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      counseling_vault: {
+        Row: {
+          created_at: string
+          id: string
+          incident_id: string
+          note: string
+          owner_id: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          incident_id: string
+          note: string
+          owner_id: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          incident_id?: string
+          note?: string
+          owner_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "counseling_vault_incident_id_owner_id_fkey"
+            columns: ["incident_id", "owner_id"]
+            isOneToOne: false
+            referencedRelation: "incident_records"
+            referencedColumns: ["id", "owner_id"]
+          },
+        ]
+      }
+      incident_records: {
+        Row: {
+          confirmed_facts: Json
+          confirmed_parties: Json
+          created_at: string
+          id: string
+          intake_notes: string
+          legal_notes: Json
+          medical_family_details: Json
+          owner_id: string
+          pastoral_guidance: Json
+          safety_gates: Json
+          situation_type: string
+          timeline: Json
+          title: string
+          unconfirmed_rumors: Json
+          updated_at: string
+        }
+        Insert: {
+          confirmed_facts?: Json
+          confirmed_parties?: Json
+          created_at?: string
+          id?: string
+          intake_notes?: string
+          legal_notes?: Json
+          medical_family_details?: Json
+          owner_id: string
+          pastoral_guidance?: Json
+          safety_gates?: Json
+          situation_type: string
+          timeline?: Json
+          title: string
+          unconfirmed_rumors?: Json
+          updated_at?: string
+        }
+        Update: {
+          confirmed_facts?: Json
+          confirmed_parties?: Json
+          created_at?: string
+          id?: string
+          intake_notes?: string
+          legal_notes?: Json
+          medical_family_details?: Json
+          owner_id?: string
+          pastoral_guidance?: Json
+          safety_gates?: Json
+          situation_type?: string
+          timeline?: Json
+          title?: string
+          unconfirmed_rumors?: Json
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      team_profiles: {
+        Row: {
+          church_name: string
+          contact_preferences: Json
+          created_at: string
+          leadership_roles: Json
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          church_name?: string
+          contact_preferences?: Json
+          created_at?: string
+          leadership_roles?: Json
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          church_name?: string
+          contact_preferences?: Json
+          created_at?: string
+          leadership_roles?: Json
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never

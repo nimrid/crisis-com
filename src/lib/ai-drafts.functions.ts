@@ -1,0 +1,141 @@
+import { createServerFn } from "@tanstack/react-start";
+import { getRequest } from "@tanstack/react-start/server";
+import { z } from "zod";
+
+import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
+import { getDraftBlockers, type IncidentRecord } from "@/lib/graceguard";
+
+const draftInput = z.object({
+  audience: z.enum(["board", "staff", "congregation", "press"]),
+  title: z.string().min(1).max(300),
+  situationType: z.string().min(1).max(120),
+  verifiedFacts: z.array(z.string().max(4000)).max(100),
+  timeline: z.array(z.object({
+    time: z.string().max(120),
+    detail: z.string().max(4000),
+    verified: z.boolean(),
+  }).strict()).max(100),
+  confirmedParties: z.array(z.string().max(300)).max(100),
+  unconfirmedRumors: z.array(z.string().max(4000)).max(100),
+  pastoralGuidance: z.array(z.string().max(4000)).max(100),
+  legalRiskNotes: z.array(z.string().max(4000)).max(100),
+  emergencyServicesStatus: z.enum(["pending", "contacted", "not_required"]),
+  nextOfKinNotified: z.boolean(),
+  riskContactNotified: z.boolean(),
+  spokesperson: z.string().max(300),
+  churchName: z.string().max(300),
+  officialPressContact: z.string().max(320),
+  recipientTier: z.enum(["executive", "elders", "pastoral", "volunteers"]),
+  confidentialityAcknowledged: z.literal(true),
+}).strict();
+
+const AUDIENCE_RULES = {
+  board: "Create a confidential, unvarnished chronology, governance actions, only the supplied liability notes, and a clear board voting checklist. Label unverified claims prominently as unverified. Do not infer fault or guilt.",
+  staff: "Write a 30-second spoken script in short bullets for greeters and youth leaders. Give one calm line, a brief care statement, and a clear redirection to the designated spokesperson. No names, graphic detail, legal analysis, or unverified claims.",
+  congregation: "Write a spoken pastoral address grounded in Psalm 34:18 as a scripture of lament. Include community prayer and licensed counseling resources. Use only verified facts; include no legal speculation, blame, graphic detail, or identifying medical or family information.",
+  press: "Write a legally cautious holding statement followed by four concise FAQ answers. Use only verified facts, express condolences where appropriate, take a zero-fault posture, and include the supplied official press contact. Never invent an email address or speculate about cause, responsibility, or liability.",
+} as const;
+
+function safeGatewayMessage(error: unknown): string {
+  if (error == null || typeof error !== "object") return "The draft could not be generated. Your case details are unchanged.";
+  const record = error as { message?: unknown; statusCode?: unknown; responseBody?: unknown };
+  let message = typeof record.message === "string" ? record.message : "";
+  if (typeof record.responseBody === "string") {
+    try {
+      const body = JSON.parse(record.responseBody) as { error?: { message?: unknown }; message?: unknown };
+      const upstream = body.error?.message ?? body.message;
+      if (typeof upstream === "string") message = upstream;
+    } catch {
+      // Keep the SDK's safe message when the response body is not JSON.
+    }
+  }
+  const status = typeof record.statusCode === "number" ? record.statusCode : undefined;
+  if (status === 401) return "AI drafting is not configured for this workspace. Your case details are unchanged.";
+  if (status === 402 || status === 403) {
+    return message || "AI drafting is currently unavailable for this workspace. Your case details are unchanged.";
+  }
+  if (status === 404) return message || "The requested drafting service is unavailable. No draft was produced.";
+  return message || "The draft could not be generated. Your case details are unchanged.";
+}
+
+export const generateAudienceDraft = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input: unknown) => draftInput.parse(input))
+  .handler(async ({ data }) => {
+    const incident: IncidentRecord = {
+      id: null,
+      isDemo: false,
+      title: data.title,
+      situationType: data.situationType as IncidentRecord["situationType"],
+      intakeNotes: "",
+      confirmedFacts: data.verifiedFacts,
+      timeline: data.timeline,
+      confirmedParties: data.confirmedParties,
+      rumors: data.unconfirmedRumors,
+      pastoralGuidance: data.pastoralGuidance,
+      legalNotes: data.legalRiskNotes,
+      medicalFamilyDetails: [],
+      emergencyStatus: data.emergencyServicesStatus,
+      nextOfKinNotified: data.nextOfKinNotified,
+      riskContactNotified: data.riskContactNotified,
+      spokesperson: data.spokesperson,
+    };
+    const blockers = getDraftBlockers(data.audience, incident, {
+      recipientTier: data.recipientTier,
+      confidentialityAcknowledged: data.confidentialityAcknowledged,
+    });
+    if (blockers.length > 0) throw new Error(blockers.join(" "));
+
+    const apiKey = process.env["LOVABLE_API_KEY"];
+    if (!apiKey) throw new Error("AI drafting is not configured for this workspace.");
+    const request = getRequest();
+    if (!request) throw new Error("The secure draft request could not be started.");
+
+    const instructions = [
+      "You are GraceGuard, a careful crisis communications copilot for churches and ministries.",
+      "This is a draft for human review, not legal, medical, or pastoral-care advice. Do not invent facts, identities, contact details, or actions.",
+      "Keep confirmed facts distinct from unknowns. Never admit fault, assign blame, state liability, or turn rumor into fact.",
+      "Never include names or identifying medical/family details about minors or vulnerable people.",
+      "The counseling/confessional layer is quarantined and is not available to you. Do not ask for or infer private counseling notes.",
+      "Recipient group: " + data.recipientTier + ". Confidentiality acknowledgment: confirmed.",
+      "Audience requirements: " + AUDIENCE_RULES[data.audience],
+      "Use the provided official press contact exactly when supplied. If absent, write [official press contact]; never fabricate one.",
+      "Return a polished, clearly labeled draft with no preamble about being an AI.",
+    ].join("\n");
+
+    const safeContext = {
+      audience: data.audience,
+      incidentTitle: data.title,
+      situationType: data.situationType,
+      churchName: data.churchName,
+      verifiedFacts: data.verifiedFacts,
+      timeline: data.timeline,
+      confirmedParties: data.confirmedParties,
+      unconfirmedRumors: data.audience === "board" ? data.unconfirmedRumors : [],
+      pastoralGuidance: data.pastoralGuidance,
+      legalRiskNotes: data.audience === "board" ? data.legalRiskNotes : [],
+      emergencyServicesStatus: data.emergencyServicesStatus,
+      nextOfKinNotified: data.nextOfKinNotified,
+      riskContactNotified: data.riskContactNotified,
+      spokesperson: data.spokesperson,
+      officialPressContact: data.audience === "press" ? data.officialPressContact : "",
+    };
+
+    try {
+      const { createResponsesCall } = await import("@/lib/ai/responses.server");
+      const { result } = createResponsesCall(
+        request,
+        { baseURL: "https://ai.gateway.lovable.dev/v1", apiKey, model: "openai/gpt-6-astra" },
+        [{ role: "user", content: JSON.stringify(safeContext) }],
+        instructions,
+      );
+      const text = await result.text;
+      const finishReason = await result.finishReason;
+      if (finishReason === "content-filter") throw new Error("This request was blocked. No draft was produced.");
+      if (!text.trim()) throw new Error("The drafting service returned no text. No draft was produced.");
+      return { text };
+    } catch (error) {
+      if (error instanceof Error && (error.name === "AbortError" || error.message.includes("blocked"))) throw error;
+      throw new Error(safeGatewayMessage(error));
+    }
+  });

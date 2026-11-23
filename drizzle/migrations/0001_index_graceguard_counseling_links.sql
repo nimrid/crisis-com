@@ -1,0 +1,1 @@
+CREATE INDEX counseling_vault_incident_owner_idx ON public.counseling_vault (incident_id, owner_id);
