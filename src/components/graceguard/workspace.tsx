@@ -73,8 +73,8 @@ import {
 import type { Database, Json } from "@/integrations/supabase/types";
 
 type WorkspaceView = "incident" | "drafts" | "sparring" | "profile" | "vault";
-type IncidentRow = Database["public"]["Tables"]["incident_records"]["Row"];
-type CounselingRow = Database["public"]["Tables"]["counseling_vault"]["Row"];
+type IncidentRow = Omit<Database["public"]["Tables"]["incident_records"]["Row"], "owner_id">;
+type CounselingRow = Pick<Database["public"]["Tables"]["counseling_vault"]["Row"], "id" | "note" | "created_at">;
 type ListField = "confirmedFacts" | "confirmedParties" | "rumors" | "pastoralGuidance" | "legalNotes" | "medicalFamilyDetails";
 
 interface VaultItem {
@@ -485,10 +485,6 @@ export default function GraceGuardWorkspace() {
   }
 
   function updateRole(index: number, key: "role" | "name", value: string) {
-    setProfile((current) => ({
-      ...current,
-      leadershipRoles: updateListText(current.leadershipRoles.map((entry) => `${entry.role}\u0000${entry.name}`), index, ""),
-    }));
     setProfile((current) => {
       const roles = [...current.leadershipRoles];
       const row = roles[index];

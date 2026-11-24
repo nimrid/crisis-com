@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { ArrowLeft, LoaderCircle, LockKeyhole, Mail } from "lucide-react";
+import { ArrowLeft, LoaderCircle, LockKeyhole, Mail, ShieldCheck } from "lucide-react";
 import { LovableMark } from "@lovable.dev/cloud-auth-js/react";
 
 import { Button } from "@/components/ui/button";
