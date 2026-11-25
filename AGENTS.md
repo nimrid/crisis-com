@@ -30,3 +30,5 @@ use the editor.
 <!-- LOVABLE:END -->
 
 GraceGuard audience drafts use the server-side Meta Model API connector through Lovable's connector gateway, keeping the requested provider credential out of browser code and the repository.
+
+Wrap route content in `CloudAuthProvider` at the root because protected workspace views depend on shared sign-in state.

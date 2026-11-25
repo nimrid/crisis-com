@@ -791,7 +791,7 @@ export default function GraceGuardWorkspace() {
                 <div className="flex flex-wrap gap-2">
                   <Button onClick={() => void generateDraft()} disabled={isGenerating || activeBlockers.length > 0}>
                     {isGenerating ? <LoaderCircle className="animate-spin" /> : <Sparkles />}
-                    {isGenerating ? "Preparing draft…" : session ? "Generate with Lovable AI" : "Sign in to generate"}
+                    {isGenerating ? "Preparing draft…" : session ? "Generate with Muse Spark" : "Sign in to generate"}
                   </Button>
                   {draftText && <Button variant="outline" onClick={() => void copyDraft()}><Copy /> Copy draft</Button>}
                 </div>
