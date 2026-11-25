@@ -50,7 +50,7 @@ function safeGatewayMessage(error: unknown): string {
     }
   }
   const status = typeof record.statusCode === "number" ? record.statusCode : undefined;
-  if (status === 401) return "AI drafting is not configured for this workspace. Your case details are unchanged.";
+  if (status === 401) return message || "Meta Model API rejected the connected key. Your case details are unchanged.";
   if (status === 402 || status === 403) {
     return message || "AI drafting is currently unavailable for this workspace. Your case details are unchanged.";
   }
@@ -86,8 +86,11 @@ export const generateAudienceDraft = createServerFn({ method: "POST" })
     });
     if (blockers.length > 0) throw new Error(blockers.join(" "));
 
-    const apiKey = process.env["LOVABLE_API_KEY"];
-    if (!apiKey) throw new Error("AI drafting is not configured for this workspace.");
+    const lovableApiKey = process.env["LOVABLE_API_KEY"];
+    const connectionApiKey = process.env["UDC_META_MODEL_API_API_KEY"];
+    if (!lovableApiKey || !connectionApiKey) {
+      throw new Error("The secure Meta Model API connection is not configured for this workspace.");
+    }
     const request = getRequest();
     if (!request) throw new Error("The secure draft request could not be started.");
 
@@ -122,10 +125,10 @@ export const generateAudienceDraft = createServerFn({ method: "POST" })
     };
 
     try {
-      const { createResponsesCall } = await import("@/lib/ai/responses.server");
-      const { result } = createResponsesCall(
+      const { createMetaModelCall } = await import("@/lib/ai/meta-model.server");
+      const { result } = createMetaModelCall(
         request,
-        { baseURL: "https://ai.gateway.lovable.dev/v1", apiKey, model: "openai/gpt-6-astra" },
+        { lovableApiKey, connectionApiKey },
         [{ role: "user", content: JSON.stringify(safeContext) }],
         instructions,
       );

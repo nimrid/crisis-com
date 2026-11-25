@@ -28,3 +28,5 @@ use the editor.
   own key and store it in Secrets.
 - **Secrets.** Lovable manages them. Do not put secret values in the repo.
 <!-- LOVABLE:END -->
+
+GraceGuard audience drafts use the server-side Meta Model API connector through Lovable's connector gateway, keeping the requested provider credential out of browser code and the repository.
