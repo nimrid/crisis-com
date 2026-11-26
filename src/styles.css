@@ -153,3 +153,24 @@
     color: var(--color-foreground);
   }
 }
+
+@media print {
+  body * {
+    visibility: hidden;
+  }
+
+  .graceguard-print-sheet,
+  .graceguard-print-sheet * {
+    visibility: visible;
+  }
+
+  .graceguard-print-sheet {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    padding: 1.5rem;
+    background: white;
+    color: black;
+  }
+}
