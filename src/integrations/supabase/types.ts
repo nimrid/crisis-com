@@ -14,8 +14,131 @@ export type Database = {
   }
   public: {
     Tables: {
+      audience_drafts: {
+        Row: {
+          approved_at: string | null
+          approved_by: string | null
+          audience: string
+          church_id: string | null
+          confidentiality_acknowledged: boolean
+          created_at: string
+          draft_text: string
+          id: string
+          incident_id: string
+          origin: string
+          owner_id: string
+          recipient_tier: string
+          updated_at: string
+        }
+        Insert: {
+          approved_at?: string | null
+          approved_by?: string | null
+          audience: string
+          church_id?: string | null
+          confidentiality_acknowledged?: boolean
+          created_at?: string
+          draft_text?: string
+          id?: string
+          incident_id: string
+          origin?: string
+          owner_id: string
+          recipient_tier?: string
+          updated_at?: string
+        }
+        Update: {
+          approved_at?: string | null
+          approved_by?: string | null
+          audience?: string
+          church_id?: string | null
+          confidentiality_acknowledged?: boolean
+          created_at?: string
+          draft_text?: string
+          id?: string
+          incident_id?: string
+          origin?: string
+          owner_id?: string
+          recipient_tier?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "audience_drafts_church_id_fkey"
+            columns: ["church_id"]
+            isOneToOne: false
+            referencedRelation: "churches"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "audience_drafts_incident_id_fkey"
+            columns: ["incident_id"]
+            isOneToOne: false
+            referencedRelation: "incident_records"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      church_members: {
+        Row: {
+          church_id: string
+          created_at: string
+          email: string
+          id: string
+          role: string
+          user_id: string
+        }
+        Insert: {
+          church_id: string
+          created_at?: string
+          email: string
+          id?: string
+          role: string
+          user_id: string
+        }
+        Update: {
+          church_id?: string
+          created_at?: string
+          email?: string
+          id?: string
+          role?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "church_members_church_id_fkey"
+            columns: ["church_id"]
+            isOneToOne: false
+            referencedRelation: "churches"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      churches: {
+        Row: {
+          created_at: string
+          created_by: string
+          id: string
+          name: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          created_by: string
+          id?: string
+          name: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          created_by?: string
+          id?: string
+          name?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       counseling_vault: {
         Row: {
+          church_id: string | null
           created_at: string
           id: string
           incident_id: string
@@ -24,6 +147,7 @@ export type Database = {
           updated_at: string
         }
         Insert: {
+          church_id?: string | null
           created_at?: string
           id?: string
           incident_id: string
@@ -32,6 +156,7 @@ export type Database = {
           updated_at?: string
         }
         Update: {
+          church_id?: string | null
           created_at?: string
           id?: string
           incident_id?: string
@@ -40,6 +165,13 @@ export type Database = {
           updated_at?: string
         }
         Relationships: [
+          {
+            foreignKeyName: "counseling_vault_church_id_fkey"
+            columns: ["church_id"]
+            isOneToOne: false
+            referencedRelation: "churches"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "counseling_vault_incident_id_owner_id_fkey"
             columns: ["incident_id", "owner_id"]
@@ -51,6 +183,7 @@ export type Database = {
       }
       incident_records: {
         Row: {
+          church_id: string | null
           confirmed_facts: Json
           confirmed_parties: Json
           created_at: string
@@ -68,6 +201,7 @@ export type Database = {
           updated_at: string
         }
         Insert: {
+          church_id?: string | null
           confirmed_facts?: Json
           confirmed_parties?: Json
           created_at?: string
@@ -85,6 +219,7 @@ export type Database = {
           updated_at?: string
         }
         Update: {
+          church_id?: string | null
           confirmed_facts?: Json
           confirmed_parties?: Json
           created_at?: string
@@ -101,10 +236,19 @@ export type Database = {
           unconfirmed_rumors?: Json
           updated_at?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "incident_records_church_id_fkey"
+            columns: ["church_id"]
+            isOneToOne: false
+            referencedRelation: "churches"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       team_profiles: {
         Row: {
+          church_id: string | null
           church_name: string
           contact_preferences: Json
           created_at: string
@@ -113,6 +257,7 @@ export type Database = {
           user_id: string
         }
         Insert: {
+          church_id?: string | null
           church_name?: string
           contact_preferences?: Json
           created_at?: string
@@ -121,6 +266,7 @@ export type Database = {
           user_id: string
         }
         Update: {
+          church_id?: string | null
           church_name?: string
           contact_preferences?: Json
           created_at?: string
@@ -128,14 +274,29 @@ export type Database = {
           updated_at?: string
           user_id?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "team_profiles_church_id_fkey"
+            columns: ["church_id"]
+            isOneToOne: false
+            referencedRelation: "churches"
+            referencedColumns: ["id"]
+          },
+        ]
       }
     }
     Views: {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      graceguard_has_church_role: {
+        Args: { _church_id: string; _roles: string[] }
+        Returns: boolean
+      }
+      graceguard_is_church_member: {
+        Args: { _church_id: string }
+        Returns: boolean
+      }
     }
     Enums: {
       [_ in never]: never

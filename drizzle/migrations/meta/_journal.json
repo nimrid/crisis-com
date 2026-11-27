@@ -15,6 +15,13 @@
       "when": 1795442683377,
       "tag": "0001_index_graceguard_counseling_links",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1795743963768,
+      "tag": "0002_church_memberships_and_audience_drafts",
+      "breakpoints": true
     }
   ]
 }

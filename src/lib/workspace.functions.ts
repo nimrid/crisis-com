@@ -87,7 +87,7 @@ export const listIncidentRecords = createServerFn({ method: "GET" })
     const { data, error } = await context.supabase
       .from("incident_records")
       .select(
-        "id, title, situation_type, intake_notes, confirmed_facts, timeline, confirmed_parties, unconfirmed_rumors, pastoral_guidance, legal_notes, medical_family_details, safety_gates, created_at, updated_at",
+        "id, title, situation_type, intake_notes, confirmed_facts, timeline, confirmed_parties, unconfirmed_rumors, pastoral_guidance, legal_notes, medical_family_details, safety_gates, church_id, created_at, updated_at",
       )
       .eq("owner_id", context.userId)
       .order("updated_at", { ascending: false });

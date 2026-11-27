@@ -32,3 +32,5 @@ use the editor.
 GraceGuard audience drafts use the server-side Meta Model API connector through Lovable's connector gateway, keeping the requested provider credential out of browser code and the repository.
 
 Wrap route content in `CloudAuthProvider` at the root because protected workspace views depend on shared sign-in state.
+
+Church membership is stored separately and enforced through database RLS helpers; keep counseling access limited to owners and executive/pastoral members so private notes remain narrowly scoped.
