@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  ACTION_CHECKLISTS_BY_TYPE,
   buildDraftPayload,
   createBlankIncident,
   createInitialDraftsMap,
   critiqueDraft,
   DEMO_SCENARIOS,
   formatAudienceExport,
+  formatFullCrisisPacket,
   getApprovalBlockers,
   getDraftBlockers,
   hasBlockingRedLines,
@@ -15,6 +17,7 @@ import {
   parseIntakeNotes,
   resolveSpokesperson,
   reviewSparringResponse,
+  scanLayerLeaks,
   SPARRING_QUESTIONS_BY_TYPE,
   type Audience,
   type TeamProfileData,
@@ -221,5 +224,32 @@ describe("GraceGuard approvals and export formatting", () => {
       approvedAt: "2026-11-26T16:00:00.000Z",
     });
     expect(approved).toContain("APPROVED FOR RELEASE · Reviewed by Elder Chair");
+
+    const packet = formatFullCrisisPacket(demo, drafts, profile);
+    expect(packet).toContain("FULL CRISIS COMMUNICATIONS PACKET");
+    expect(packet).toContain("--- PUBLIC & PRESS ---");
+  });
+
+  it("detects cross-layer medical/family and rumor/legal leaks and provides incident checklists", () => {
+    const incident = {
+      ...demo,
+      medicalFamilyDetails: ["St. Jude Memorial orthopedic wing"],
+      legalNotes: ["Confidential carrier reserve $250,000"],
+    };
+    const medLeaks = scanLayerLeaks(
+      "congregation",
+      "The student was taken to St. Jude Memorial.",
+      incident,
+    );
+    expect(medLeaks.length).toBe(1);
+    expect(hasBlockingRedLines("Taken to St. Jude Memorial.", "congregation", incident)).toBe(true);
+
+    const legalLeaks = scanLayerLeaks("press", "Our carrier reserve is being reviewed.", incident);
+    expect(legalLeaks.length).toBe(1);
+    expect(scanLayerLeaks("board", "Our carrier reserve is being reviewed.", incident)).toEqual([]);
+
+    for (const type of INCIDENT_TYPES) {
+      expect(ACTION_CHECKLISTS_BY_TYPE[type].length).toBeGreaterThanOrEqual(4);
+    }
   });
 });

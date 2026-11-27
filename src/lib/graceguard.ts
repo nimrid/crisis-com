@@ -49,6 +49,7 @@ export interface TeamProfileData {
     pressEmail: string;
     riskContact: string;
     preferredChannel: "email" | "phone" | "secure_messaging";
+    counselingReferral?: string;
   };
 }
 
@@ -68,6 +69,7 @@ export interface DraftPayload {
   spokesperson: string;
   churchName: string;
   officialPressContact: string;
+  counselingReferral?: string;
   recipientTier: RecipientTier;
   confidentialityAcknowledged: boolean;
 }
@@ -163,6 +165,7 @@ export const DEMO_SCENARIOS: IncidentRecord[] = [
     legalNotes: ["Risk contact notified. No finding or liability determination is represented."],
     medicalFamilyDetails: [],
     ...makeDemoGates(),
+    riskContactNotified: false,
   },
 ];
 
@@ -372,6 +375,8 @@ export function buildDraftPayload(
     spokesperson: resolveSpokesperson(incident, profile),
     churchName: profile.churchName,
     officialPressContact: audience === "press" ? profile.contactPreferences.pressEmail : "",
+    counselingReferral:
+      audience === "congregation" ? (profile.contactPreferences.counselingReferral ?? "") : "",
     recipientTier: gate.recipientTier,
     confidentialityAcknowledged: gate.confidentialityAcknowledged,
   };
@@ -471,13 +476,126 @@ const SEVERE_REDLINE_PREFIXES = [
   "Unverified claim detected:",
   "Possible identifying detail about a young person:",
   "Possible private medical detail:",
+  "Possible Layer 4 medical/family detail leaked:",
+  "Possible restricted Layer 3 or unconfirmed claim leaked:",
 ];
 
-export function hasBlockingRedLines(text: string): boolean {
-  return critiqueDraft(text).some((flag) =>
+const LEAK_STOPWORDS = new Set([
+  "about",
+  "after",
+  "before",
+  "being",
+  "church",
+  "contact",
+  "details",
+  "family",
+  "families",
+  "incident",
+  "minor",
+  "notes",
+  "other",
+  "people",
+  "please",
+  "report",
+  "should",
+  "staff",
+  "their",
+  "there",
+  "these",
+  "those",
+  "under",
+  "until",
+  "where",
+  "which",
+  "while",
+]);
+
+function extractLeakTerms(lines: string[]): string[] {
+  const terms = new Set<string>();
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.length >= 6) terms.add(trimmed);
+    for (const token of trimmed.split(/[^A-Za-z0-9'-]+/)) {
+      const clean = token.trim();
+      if (clean.length >= 5 && !LEAK_STOPWORDS.has(clean.toLowerCase())) {
+        terms.add(clean);
+      }
+    }
+  }
+  return Array.from(terms);
+}
+
+export function scanLayerLeaks(
+  audience: Audience,
+  text: string,
+  incident: IncidentRecord,
+): string[] {
+  const lower = text.toLowerCase();
+  if (!lower.trim()) return [];
+  const flags: string[] = [];
+
+  for (const term of extractLeakTerms(incident.medicalFamilyDetails)) {
+    if (lower.includes(term.toLowerCase())) {
+      flags.push(
+        `Possible Layer 4 medical/family detail leaked: "${term}". Remove restricted care details.`,
+      );
+      break;
+    }
+  }
+
+  if (audience !== "board") {
+    const restricted = [...incident.rumors, ...incident.legalNotes];
+    for (const term of extractLeakTerms(restricted)) {
+      if (lower.includes(term.toLowerCase())) {
+        flags.push(
+          `Possible restricted Layer 3 or unconfirmed claim leaked: "${term}". Keep rumors and legal strategy off outward drafts.`,
+        );
+        break;
+      }
+    }
+  }
+
+  return flags;
+}
+
+export function hasBlockingRedLines(
+  text: string,
+  audience?: Audience,
+  incident?: IncidentRecord,
+): boolean {
+  const baseFlags = critiqueDraft(text);
+  const leakFlags = audience && incident ? scanLayerLeaks(audience, text, incident) : [];
+  return [...baseFlags, ...leakFlags].some((flag) =>
     SEVERE_REDLINE_PREFIXES.some((prefix) => flag.startsWith(prefix)),
   );
 }
+
+export const ACTION_CHECKLISTS_BY_TYPE: Record<IncidentType, string[]> = {
+  "Youth / Student Accident": [
+    "Confirm on-site adult supervision and medical responder handoff.",
+    "Notify parents/guardians directly before any group message goes out.",
+    "Preserve vehicle, trip roster, and incident-report records for insurer review.",
+    "Brief youth leaders with 30-second holding lines and single spokesperson redirect.",
+  ],
+  "Pastoral Misconduct / Staff Transition": [
+    "Confirm mandatory reporting obligations and independent safeguarding review.",
+    "Secure church IT, financial, and building access before public announcement.",
+    "Separate confidential counseling notes (Layer 5) from governing board facts.",
+    "Assign an independent pastoral-care contact for affected congregation members.",
+  ],
+  "Sudden Death / Community Tragedy": [
+    "Coordinate directly with family and local authorities before any public notice.",
+    "Confirm pastoral presence with immediate family and close ministry leaders.",
+    "Prepare licensed grief counseling referrals for Sunday gathering.",
+    "Give greeters and ushers compassionate holding lines and care-team contacts.",
+  ],
+  "Legal / Financial / Property Incident": [
+    "Notify legal counsel and church property/liability insurer before statements.",
+    "Preserve financial logs, security footage, or physical records without alteration.",
+    "Verify whether law enforcement or regulatory reporting is required.",
+    "Align board leadership on interim operational continuity and single spokesperson.",
+  ],
+};
 
 export function getApprovalBlockers(
   audience: Audience,
@@ -585,13 +703,16 @@ export function formatAudienceExport(
   }
 
   if (audience === "congregation") {
+    const referral =
+      profile.contactPreferences.counselingReferral?.trim() ||
+      `Pastoral & counseling support contact: ${spokesperson}`;
     return [
       `${church} — CONGREGATION ADDRESS`,
       statusLine,
       "",
       draftText.trim(),
       "",
-      `Pastoral & counseling support contact: ${spokesperson}`,
+      referral,
     ].join("\n");
   }
 
@@ -602,6 +723,32 @@ export function formatAudienceExport(
     "",
     draftText.trim(),
   ].join("\n");
+}
+
+export function formatFullCrisisPacket(
+  incident: IncidentRecord,
+  draftsByAudience: Record<Audience, AudienceDraftState>,
+  profile: TeamProfileData,
+): string {
+  const church = profile.churchName.trim() || "GraceGuard Ministry";
+  const spokesperson = resolveSpokesperson(incident, profile) || "Designated spokesperson";
+  const header = [
+    `${church} — FULL CRISIS COMMUNICATIONS PACKET`,
+    `Incident: ${incident.title} (${incident.situationType})`,
+    `Safety Interlocks: 911=${incident.emergencyStatus} | Next-of-kin=${incident.nextOfKinNotified ? "Yes" : "No"} | Risk contact=${incident.riskContactNotified ? "Yes" : "No"} | Spokesperson=${spokesperson}`,
+    `Generated: ${new Date().toLocaleString()}`,
+    "=".repeat(64),
+  ].join("\n");
+
+  const sections = AUDIENCES.map((item) => {
+    const state = draftsByAudience[item.id];
+    const body = state.text.trim()
+      ? formatAudienceExport(item.id, state.text, incident, profile, state.approval)
+      : `[No ${item.label} draft prepared yet]`;
+    return `\n--- ${item.label.toUpperCase()} ---\n${body}`;
+  });
+
+  return [header, ...sections].join("\n");
 }
 
 export function reviewSparringResponse(
@@ -639,4 +786,32 @@ export function reviewSparringResponse(
     );
   }
   return notes;
+}
+
+export function applyDemoSafetyRevision(
+  text: string,
+  audience: Audience,
+  incident: IncidentRecord,
+  profile: TeamProfileData,
+): string {
+  const spokesperson = resolveSpokesperson(incident, profile) || "our designated spokesperson";
+  const cleaned = text
+    .replace(
+      /\bwe (?:are|were) (?:at fault|responsible|negligent)\b/gi,
+      "we are reviewing the facts carefully",
+    )
+    .replace(
+      /\bwe (?:caused|failed to|accept liability|guarantee)\b/gi,
+      "we are caring for everyone affected and cooperating with review",
+    )
+    .replace(
+      /\b(?:no comment|per policy|cannot confirm or deny)\b/gi,
+      `we are sharing only confirmed updates through ${spokesperson}`,
+    )
+    .replace(/\b(?:rumou?r|allegation|people are saying|supposedly)\b/gi, "unconfirmed report");
+
+  if (critiqueDraft(cleaned).length > 1 || scanLayerLeaks(audience, cleaned, incident).length > 0) {
+    return getSampleDraft(audience, incident, profile);
+  }
+  return cleaned;
 }

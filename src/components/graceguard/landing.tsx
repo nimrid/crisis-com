@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 
 import { GraceGuardLogo } from "@/components/graceguard/logo";
+import { ThemeToggle } from "@/components/graceguard/theme-toggle";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useCloudAuth } from "@/lib/auth-context";
@@ -137,6 +138,7 @@ export default function GraceGuardLanding() {
           </nav>
 
           <div className="flex items-center gap-2">
+            <ThemeToggle />
             {ready && session ? (
               <Button asChild size="sm">
                 <Link to="/workspace">

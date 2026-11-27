@@ -32,6 +32,7 @@ const draftInput = z
     spokesperson: z.string().max(300),
     churchName: z.string().max(300),
     officialPressContact: z.string().max(320),
+    counselingReferral: z.string().max(500).optional(),
     recipientTier: z.enum(["executive", "elders", "pastoral", "volunteers"]),
     confidentialityAcknowledged: z.literal(true),
   })
@@ -113,66 +114,120 @@ async function runMetaModelPrompt(instructions: string, userPayload: unknown): P
   }
 }
 
+function prepareDraftPrompt(data: z.infer<typeof draftInput>) {
+  const incident: IncidentRecord = {
+    id: null,
+    isDemo: false,
+    title: data.title,
+    situationType: data.situationType as IncidentRecord["situationType"],
+    intakeNotes: "",
+    confirmedFacts: data.verifiedFacts,
+    timeline: data.timeline,
+    confirmedParties: data.confirmedParties,
+    rumors: data.unconfirmedRumors,
+    pastoralGuidance: data.pastoralGuidance,
+    legalNotes: data.legalRiskNotes,
+    medicalFamilyDetails: [],
+    emergencyStatus: data.emergencyServicesStatus,
+    nextOfKinNotified: data.nextOfKinNotified,
+    riskContactNotified: data.riskContactNotified,
+    spokesperson: data.spokesperson,
+  };
+  const blockers = getDraftBlockers(data.audience, incident, {
+    recipientTier: data.recipientTier,
+    confidentialityAcknowledged: data.confidentialityAcknowledged,
+  });
+  if (blockers.length > 0) throw new Error(blockers.join(" "));
+
+  const instructions = [
+    "You are GraceGuard, a careful crisis communications copilot for churches and ministries.",
+    "This is a draft for human review, not legal, medical, or pastoral-care advice. Do not invent facts, identities, contact details, or actions.",
+    "Keep confirmed facts distinct from unknowns. Never admit fault, assign blame, state liability, or turn rumor into fact.",
+    "Never include names or identifying medical/family details about minors or vulnerable people.",
+    "The counseling/confessional layer is quarantined and is not available to you. Do not ask for or infer private counseling notes.",
+    "Recipient group: " + data.recipientTier + ". Confidentiality acknowledgment: confirmed.",
+    "Audience requirements: " + AUDIENCE_RULES[data.audience],
+    "Use the provided official press contact or counseling referral exactly when supplied. Never fabricate contacts.",
+    "Return a polished, clearly labeled draft with no preamble about being an AI.",
+  ].join("\n");
+
+  const safeContext = {
+    audience: data.audience,
+    incidentTitle: data.title,
+    situationType: data.situationType,
+    churchName: data.churchName,
+    verifiedFacts: data.verifiedFacts,
+    timeline: data.timeline,
+    confirmedParties: data.confirmedParties,
+    unconfirmedRumors: data.audience === "board" ? data.unconfirmedRumors : [],
+    pastoralGuidance: data.pastoralGuidance,
+    legalRiskNotes: data.audience === "board" ? data.legalRiskNotes : [],
+    emergencyServicesStatus: data.emergencyServicesStatus,
+    nextOfKinNotified: data.nextOfKinNotified,
+    riskContactNotified: data.riskContactNotified,
+    spokesperson: data.spokesperson,
+    officialPressContact: data.audience === "press" ? data.officialPressContact : "",
+    counselingReferral: data.audience === "congregation" ? (data.counselingReferral ?? "") : "",
+  };
+
+  return { instructions, safeContext };
+}
+
 export const generateAudienceDraft = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((input: unknown) => draftInput.parse(input))
   .handler(async ({ data }) => {
-    const incident: IncidentRecord = {
-      id: null,
-      isDemo: false,
-      title: data.title,
-      situationType: data.situationType as IncidentRecord["situationType"],
-      intakeNotes: "",
-      confirmedFacts: data.verifiedFacts,
-      timeline: data.timeline,
-      confirmedParties: data.confirmedParties,
-      rumors: data.unconfirmedRumors,
-      pastoralGuidance: data.pastoralGuidance,
-      legalNotes: data.legalRiskNotes,
-      medicalFamilyDetails: [],
-      emergencyStatus: data.emergencyServicesStatus,
-      nextOfKinNotified: data.nextOfKinNotified,
-      riskContactNotified: data.riskContactNotified,
-      spokesperson: data.spokesperson,
-    };
-    const blockers = getDraftBlockers(data.audience, incident, {
-      recipientTier: data.recipientTier,
-      confidentialityAcknowledged: data.confidentialityAcknowledged,
-    });
-    if (blockers.length > 0) throw new Error(blockers.join(" "));
-
-    const instructions = [
-      "You are GraceGuard, a careful crisis communications copilot for churches and ministries.",
-      "This is a draft for human review, not legal, medical, or pastoral-care advice. Do not invent facts, identities, contact details, or actions.",
-      "Keep confirmed facts distinct from unknowns. Never admit fault, assign blame, state liability, or turn rumor into fact.",
-      "Never include names or identifying medical/family details about minors or vulnerable people.",
-      "The counseling/confessional layer is quarantined and is not available to you. Do not ask for or infer private counseling notes.",
-      "Recipient group: " + data.recipientTier + ". Confidentiality acknowledgment: confirmed.",
-      "Audience requirements: " + AUDIENCE_RULES[data.audience],
-      "Use the provided official press contact exactly when supplied. If absent, write [official press contact]; never fabricate one.",
-      "Return a polished, clearly labeled draft with no preamble about being an AI.",
-    ].join("\n");
-
-    const safeContext = {
-      audience: data.audience,
-      incidentTitle: data.title,
-      situationType: data.situationType,
-      churchName: data.churchName,
-      verifiedFacts: data.verifiedFacts,
-      timeline: data.timeline,
-      confirmedParties: data.confirmedParties,
-      unconfirmedRumors: data.audience === "board" ? data.unconfirmedRumors : [],
-      pastoralGuidance: data.pastoralGuidance,
-      legalRiskNotes: data.audience === "board" ? data.legalRiskNotes : [],
-      emergencyServicesStatus: data.emergencyServicesStatus,
-      nextOfKinNotified: data.nextOfKinNotified,
-      riskContactNotified: data.riskContactNotified,
-      spokesperson: data.spokesperson,
-      officialPressContact: data.audience === "press" ? data.officialPressContact : "",
-    };
-
+    const { instructions, safeContext } = prepareDraftPrompt(data);
     const text = await runMetaModelPrompt(instructions, safeContext);
     return { text, warnings: critiqueDraft(text) };
+  });
+
+export const generateAudienceDraftStream = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input: unknown) => draftInput.parse(input))
+  .handler(async ({ data }) => {
+    const { instructions, safeContext } = prepareDraftPrompt(data);
+    const lovableApiKey = process.env["LOVABLE_API_KEY"];
+    const connectionApiKey = process.env["UDC_META_MODEL_API_API_KEY"];
+    if (!lovableApiKey || !connectionApiKey) {
+      throw new Error("The secure Meta Model API connection is not configured for this workspace.");
+    }
+    const request = getRequest();
+    if (!request) throw new Error("The secure draft request could not be started.");
+
+    try {
+      const { createMetaModelCall } = await import("@/lib/ai/meta-model.server");
+      const { result } = createMetaModelCall(
+        request,
+        { lovableApiKey, connectionApiKey },
+        [{ role: "user", content: JSON.stringify(safeContext) }],
+        instructions,
+      );
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream<Uint8Array>({
+        async start(controller) {
+          try {
+            for await (const chunk of result.textStream) {
+              controller.enqueue(encoder.encode(chunk));
+            }
+            controller.close();
+          } catch (streamError) {
+            controller.error(streamError);
+          }
+        },
+      });
+      return new Response(stream, {
+        headers: { "Content-Type": "text/plain; charset=utf-8" },
+      });
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        (error.name === "AbortError" || error.message.includes("blocked"))
+      ) {
+        throw error;
+      }
+      throw new Error(safeGatewayMessage(error));
+    }
   });
 
 export const reviseDraftForSafety = createServerFn({ method: "POST" })

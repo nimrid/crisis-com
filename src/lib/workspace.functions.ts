@@ -66,6 +66,7 @@ export const saveTeamProfile = createServerFn({ method: "POST" })
             pressEmail: z.string().max(320),
             riskContact: z.string().max(320),
             preferredChannel: z.enum(["email", "phone", "secure_messaging"]),
+            counselingReferral: z.string().max(500).optional(),
           })
           .strict(),
       })

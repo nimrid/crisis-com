@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
@@ -22,6 +22,7 @@ import {
   Megaphone,
   MessageSquare,
   Mic,
+  MicOff,
   Pencil,
   Plus,
   Printer,
@@ -69,15 +70,18 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { GraceGuardLogo } from "@/components/graceguard/logo";
+import { ThemeToggle } from "@/components/graceguard/theme-toggle";
 import { supabase } from "@/integrations/supabase/client";
 import { useCloudAuth } from "@/lib/auth-context";
 import {
   coachSparringResponse,
   generateAudienceDraft,
+  generateAudienceDraftStream,
   reviseDraftForSafety,
   triageIntakeNotesWithAI,
 } from "@/lib/ai-drafts.functions";
 import {
+  ACTION_CHECKLISTS_BY_TYPE,
   AUDIENCES,
   buildDraftPayload,
   createBlankIncident,
@@ -85,8 +89,10 @@ import {
   critiqueDraft,
   DEMO_SCENARIOS,
   formatAudienceExport,
+  formatFullCrisisPacket,
   getApprovalBlockers,
   getDraftBlockers,
+  getSampleDraft,
   hasBlockingRedLines,
   INCIDENT_TYPES,
   mergeStructuredIntake,
@@ -94,7 +100,9 @@ import {
   RECIPIENT_TIERS,
   resolveSpokesperson,
   reviewSparringResponse,
+  scanLayerLeaks,
   SPARRING_QUESTIONS_BY_TYPE,
+  applyDemoSafetyRevision,
   type Audience,
   type AudienceDraftState,
   type DraftGate,
@@ -199,6 +207,8 @@ function parseProfile(row: Awaited<ReturnType<typeof getTeamProfile>>): TeamProf
       pressEmail: typeof contacts["pressEmail"] === "string" ? contacts["pressEmail"] : "",
       riskContact: typeof contacts["riskContact"] === "string" ? contacts["riskContact"] : "",
       preferredChannel: channel === "phone" || channel === "secure_messaging" ? channel : "email",
+      counselingReferral:
+        typeof contacts["counselingReferral"] === "string" ? contacts["counselingReferral"] : "",
     },
   };
 }
@@ -280,6 +290,7 @@ export default function GraceGuardWorkspace() {
   const saveAudienceDraftFn = useServerFn(saveAudienceDraft);
   const getMonthlyApprovedCountFn = useServerFn(getMonthlyApprovedCount);
   const generateAudienceDraftFn = useServerFn(generateAudienceDraft);
+  const generateAudienceDraftStreamFn = useServerFn(generateAudienceDraftStream);
   const reviseDraftForSafetyFn = useServerFn(reviseDraftForSafety);
   const triageIntakeNotesWithAIFn = useServerFn(triageIntakeNotesWithAI);
   const coachSparringResponseFn = useServerFn(coachSparringResponse);
@@ -324,6 +335,12 @@ export default function GraceGuardWorkspace() {
   const [isUpdatingChurch, setIsUpdatingChurch] = useState(false);
   const [intakeStructured, setIntakeStructured] = useState("");
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const [autoSaveStatus, setAutoSaveStatus] = useState("");
+  const [isDictating, setIsDictating] = useState(false);
+  const [dictationSupported, setDictationSupported] = useState(false);
+  const recognitionRef = useRef<{ stop: () => void } | null>(null);
+  const [checkedActionsByKey, setCheckedActionsByKey] = useState<Record<string, string[]>>({});
+  const [showJudgeGuide, setShowJudgeGuide] = useState(true);
   const [pendingScenario, setPendingScenario] = useState<string | null>(null);
   const [confirmDeleteIncident, setConfirmDeleteIncident] = useState(false);
   const [vaultDraft, setVaultDraft] = useState("");
@@ -453,6 +470,72 @@ export default function GraceGuardWorkspace() {
     };
   }, [activeView, userId, incident.id, incident.isDemo, listCounselingNotesFn]);
 
+  useEffect(() => {
+    const speechWin = window as unknown as {
+      SpeechRecognition?: unknown;
+      webkitSpeechRecognition?: unknown;
+    };
+    setDictationSupported(
+      Boolean(speechWin.SpeechRecognition || speechWin.webkitSpeechRecognition),
+    );
+    return () => {
+      recognitionRef.current?.stop();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (incident.isDemo || !hasUnsavedChanges) return;
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [incident.isDemo, hasUnsavedChanges]);
+
+  useEffect(() => {
+    if (!userId || incident.isDemo || !incident.id || !hasUnsavedChanges || isSaving) return;
+    const timer = window.setTimeout(() => {
+      void saveIncidentRecordFn({
+        data: {
+          id: incident.id,
+          churchId: incident.churchId ?? churchWorkspace.church?.id ?? null,
+          title: incident.title,
+          situationType: incident.situationType,
+          intakeNotes: incident.intakeNotes,
+          confirmedFacts: incident.confirmedFacts,
+          timeline: incident.timeline,
+          confirmedParties: incident.confirmedParties,
+          rumors: incident.rumors,
+          pastoralGuidance: incident.pastoralGuidance,
+          legalNotes: incident.legalNotes,
+          medicalFamilyDetails: incident.medicalFamilyDetails,
+          safetyGates: {
+            emergencyStatus: incident.emergencyStatus,
+            nextOfKinNotified: incident.nextOfKinNotified,
+            riskContactNotified: incident.riskContactNotified,
+            spokesperson: incident.spokesperson,
+          },
+        },
+      })
+        .then(() => {
+          setHasUnsavedChanges(false);
+          setAutoSaveStatus("Auto-saved");
+        })
+        .catch(() => {
+          // Manual save remains available if auto-save fails.
+        });
+    }, 2500);
+    return () => window.clearTimeout(timer);
+  }, [
+    userId,
+    incident,
+    hasUnsavedChanges,
+    isSaving,
+    churchWorkspace.church?.id,
+    saveIncidentRecordFn,
+  ]);
+
   const activeBlockers = useMemo(
     () => getDraftBlockers(draftAudience, incident, draftGate, profile),
     [draftAudience, incident, draftGate, profile],
@@ -461,8 +544,23 @@ export default function GraceGuardWorkspace() {
     () => getApprovalBlockers(draftAudience, incident, draftGate, draftText, profile),
     [draftAudience, incident, draftGate, draftText, profile],
   );
-  const redLines = useMemo(() => critiqueDraft(draftText), [draftText]);
-  const hasSevereFlags = useMemo(() => hasBlockingRedLines(draftText), [draftText]);
+  const redLines = useMemo(() => {
+    const base = critiqueDraft(draftText);
+    const leaks = scanLayerLeaks(draftAudience, draftText, incident);
+    if (leaks.length === 0) return base;
+    return [
+      ...leaks,
+      ...base.filter(
+        (flag) =>
+          flag !==
+          "No obvious red-line phrase found. A designated leader should still review this draft.",
+      ),
+    ];
+  }, [draftAudience, draftText, incident]);
+  const hasSevereFlags = useMemo(
+    () => hasBlockingRedLines(draftText, draftAudience, incident),
+    [draftText, draftAudience, incident],
+  );
   const approvedCount = useMemo(
     () => AUDIENCES.filter((item) => draftsByAudience[item.id].approval !== null).length,
     [draftsByAudience],
@@ -752,6 +850,17 @@ export default function GraceGuardWorkspace() {
       return;
     }
     if (!session) {
+      if (incident.isDemo) {
+        const extracted = parseIntakeNotes(incident.intakeNotes);
+        const { merged, addedCount } = mergeStructuredIntake(incident, extracted);
+        setIncident((current) => ({ ...current, ...merged }));
+        setIntakeStructured(
+          addedCount > 0
+            ? `Demo triage added ${addedCount} item${addedCount === 1 ? "" : "s"}. Sign in for live Muse Spark triage.`
+            : "Demo triage checked notes — no new items to add.",
+        );
+        return;
+      }
       await navigate({ to: "/auth" });
       return;
     }
@@ -783,22 +892,100 @@ export default function GraceGuardWorkspace() {
     }
   }
 
+  function toggleDictation() {
+    if (isDictating) {
+      recognitionRef.current?.stop();
+      setIsDictating(false);
+      return;
+    }
+    type SpeechCtor = new () => {
+      continuous: boolean;
+      interimResults: boolean;
+      lang: string;
+      onresult: ((event: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null;
+      onerror: (() => void) | null;
+      onend: (() => void) | null;
+      start: () => void;
+      stop: () => void;
+    };
+    const speechWin = window as unknown as {
+      SpeechRecognition?: SpeechCtor;
+      webkitSpeechRecognition?: SpeechCtor;
+    };
+    const Ctor = speechWin.SpeechRecognition ?? speechWin.webkitSpeechRecognition;
+    if (!Ctor) return;
+
+    const recognition = new Ctor();
+    recognition.continuous = true;
+    recognition.interimResults = false;
+    recognition.lang = "en-US";
+    recognition.onresult = (event) => {
+      const latest = event.results[event.results.length - 1]?.[0]?.transcript?.trim();
+      if (!latest) return;
+      setIncident((current) => ({
+        ...current,
+        intakeNotes: current.intakeNotes ? `${current.intakeNotes}\n${latest}` : latest,
+      }));
+      if (!incident.isDemo) setHasUnsavedChanges(true);
+    };
+    recognition.onerror = () => setIsDictating(false);
+    recognition.onend = () => setIsDictating(false);
+    recognitionRef.current = recognition;
+    recognition.start();
+    setIsDictating(true);
+  }
+
   async function generateDraft() {
     setDraftError("");
     if (activeBlockers.length > 0) return;
     if (!session) {
+      if (incident.isDemo) {
+        setIsGenerating(true);
+        const demoText = getSampleDraft(draftAudience, incident, profile);
+        updateAudienceDraft(draftAudience, {
+          text: demoText,
+          origin: "fictional",
+          approval: null,
+        });
+        setNotice(
+          "Demo preview updated from current facts and locks. Sign in for live Muse Spark drafting.",
+        );
+        setIsGenerating(false);
+        return;
+      }
       await navigate({ to: "/auth" });
       return;
     }
     setIsGenerating(true);
     try {
       const payload = buildDraftPayload(draftAudience, incident, draftGate, profile);
-      const result = await generateAudienceDraftFn({ data: payload });
-      updateAudienceDraft(draftAudience, {
-        text: result.text,
-        origin: "ai",
-        approval: null,
-      });
+      const response = await generateAudienceDraftStreamFn({ data: payload });
+      if (response instanceof Response && response.body) {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let accumulated = "";
+        updateAudienceDraft(draftAudience, { text: "", origin: "ai", approval: null });
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          accumulated += decoder.decode(value, { stream: true });
+          updateAudienceDraft(draftAudience, {
+            text: accumulated,
+            origin: "ai",
+            approval: null,
+          });
+        }
+        if (!accumulated.trim()) {
+          throw new Error("The drafting service returned no text. No draft was produced.");
+        }
+      } else {
+        const result = await generateAudienceDraftFn({ data: payload });
+        updateAudienceDraft(draftAudience, {
+          text: result.text,
+          origin: "ai",
+          approval: null,
+        });
+      }
     } catch (error) {
       setDraftError(
         error instanceof Error ? error.message : "Draft generation failed. No draft was produced.",
@@ -811,6 +998,16 @@ export default function GraceGuardWorkspace() {
   async function suggestSaferRevision() {
     if (!draftText.trim()) return;
     if (!session) {
+      if (incident.isDemo) {
+        const revised = applyDemoSafetyRevision(draftText, draftAudience, incident, profile);
+        updateAudienceDraft(draftAudience, {
+          text: revised,
+          origin: "edited",
+          approval: null,
+        });
+        setNotice("Demo safety revision applied. Sign in for live Muse Spark copy editing.");
+        return;
+      }
       await navigate({ to: "/auth" });
       return;
     }
@@ -988,6 +1185,38 @@ export default function GraceGuardWorkspace() {
     URL.revokeObjectURL(url);
   }
 
+  function downloadFullPacket() {
+    const content = formatFullCrisisPacket(incident, draftsByAudience, profile);
+    const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    const slug =
+      incident.title
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-|-$/g, "") || "incident";
+    link.href = url;
+    link.download = `graceguard-${slug}-full-packet.txt`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function openDraftInEmail() {
+    if (!draftText.trim()) return;
+    const formatted = formatAudienceExport(
+      draftAudience,
+      draftText,
+      incident,
+      profile,
+      draftApproval,
+    );
+    const subject = encodeURIComponent(
+      `${profile.churchName || "GraceGuard"} — ${AUDIENCES.find((item) => item.id === draftAudience)?.label ?? "Statement"}: ${incident.title}`,
+    );
+    const body = encodeURIComponent(formatted);
+    window.location.href = `mailto:?subject=${subject}&body=${body}`;
+  }
+
   async function copyDraft() {
     if (!draftText) return;
     try {
@@ -1008,6 +1237,16 @@ export default function GraceGuardWorkspace() {
   async function coachSparringWithAI() {
     if (!sparringResponse.trim()) return;
     if (!session) {
+      if (incident.isDemo) {
+        const baseNotes = reviewSparringResponse(sparringResponse, incident, profile);
+        const leadFact = incident.confirmedFacts[0];
+        setSparringReview(
+          leadFact
+            ? [...baseNotes, `Anchor your reply to verified fact: "${leadFact}"`]
+            : baseNotes,
+        );
+        return;
+      }
       await navigate({ to: "/auth" });
       return;
     }
@@ -1368,13 +1607,27 @@ export default function GraceGuardWorkspace() {
                     <div>
                       <h2 className="font-semibold">Notes and voice-memo text</h2>
                       <p className="mt-1 text-sm text-muted-foreground">
-                        Paste unstructured notes. Structuring happens on this device without
-                        overwriting existing layer edits.
+                        Paste unstructured notes or dictate hands-free. Structuring happens on this
+                        device without overwriting existing layer edits.
                       </p>
                     </div>
-                    <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-muted text-muted-foreground">
-                      <Mic className="h-4 w-4" aria-hidden="true" />
-                    </div>
+                    <Button
+                      type="button"
+                      variant={isDictating ? "destructive" : "outline"}
+                      size="sm"
+                      disabled={!dictationSupported}
+                      title={
+                        dictationSupported
+                          ? isDictating
+                            ? "Stop voice dictation"
+                            : "Dictate notes with microphone"
+                          : "Voice dictation is not supported in this browser"
+                      }
+                      onClick={toggleDictation}
+                    >
+                      {isDictating ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+                      {isDictating ? "Stop" : "Dictate"}
+                    </Button>
                   </div>
                   <Textarea
                     value={incident.intakeNotes}
@@ -1396,7 +1649,9 @@ export default function GraceGuardWorkspace() {
                         ? "Triaging…"
                         : session
                           ? "Smart triage (Muse Spark)"
-                          : "Sign in for smart triage"}
+                          : incident.isDemo
+                            ? "Smart triage (demo)"
+                            : "Sign in for smart triage"}
                     </Button>
                     <Button variant="ghost" size="sm" onClick={() => structureIntake("replace")}>
                       Replace all from notes
@@ -1517,6 +1772,63 @@ export default function GraceGuardWorkspace() {
                   </div>
                 </div>
               </div>
+
+              {(() => {
+                const actionItems = ACTION_CHECKLISTS_BY_TYPE[incident.situationType];
+                const checklistKey = incident.id ?? scenarioValue;
+                const checked = checkedActionsByKey[checklistKey] ?? [];
+                return (
+                  <div className="mt-6 rounded-xl border border-border bg-card p-5 shadow-xs">
+                    <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <h2 className="font-semibold">
+                          First-60-minute action checklist · {incident.situationType}
+                        </h2>
+                        <p className="mt-0.5 text-xs text-muted-foreground">
+                          Operational safeguards tailored to this incident type.
+                        </p>
+                      </div>
+                      <Badge variant="outline">
+                        {checked.length} / {actionItems.length} completed
+                      </Badge>
+                    </div>
+                    <div className="grid gap-3 md:grid-cols-2">
+                      {actionItems.map((step, index) => {
+                        const isChecked = checked.includes(step);
+                        const stepId = `action-step-${index}`;
+                        return (
+                          <label
+                            key={step}
+                            htmlFor={stepId}
+                            className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3.5 py-2.5 text-sm transition-colors ${
+                              isChecked
+                                ? "border-success/40 bg-success/5 text-muted-foreground line-through"
+                                : "border-border hover:bg-muted/30"
+                            }`}
+                          >
+                            <Checkbox
+                              id={stepId}
+                              checked={isChecked}
+                              className="mt-0.5"
+                              onCheckedChange={(val) => {
+                                setCheckedActionsByKey((current) => {
+                                  const existing = current[checklistKey] ?? [];
+                                  const next =
+                                    val === true
+                                      ? [...existing, step]
+                                      : existing.filter((item) => item !== step);
+                                  return { ...current, [checklistKey]: next };
+                                });
+                              }}
+                            />
+                            <span>{step}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
             </TabsContent>
             <TabsContent value="layers" className="mt-6">
               <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
@@ -1781,7 +2093,9 @@ export default function GraceGuardWorkspace() {
                         ? "Preparing draft…"
                         : session
                           ? "Generate with Muse Spark"
-                          : "Sign in to generate"}
+                          : incident.isDemo
+                            ? "Preview draft (demo)"
+                            : "Sign in to generate"}
                     </Button>
                     {draftText && (
                       <>
@@ -1801,6 +2115,14 @@ export default function GraceGuardWorkspace() {
                         <Button variant="outline" onClick={downloadDraft}>
                           <Download /> Download .txt
                         </Button>
+                        <Button variant="outline" onClick={downloadFullPacket}>
+                          <Download /> Full packet
+                        </Button>
+                        {(draftAudience === "board" || draftAudience === "press") && (
+                          <Button variant="outline" onClick={openDraftInEmail}>
+                            <Mail /> Email draft
+                          </Button>
+                        )}
                         <Button variant="outline" onClick={() => setExportDialogOpen(true)}>
                           <Eye /> Reading / print view
                         </Button>
@@ -1872,7 +2194,9 @@ export default function GraceGuardWorkspace() {
                             ? "Revising…"
                             : session
                               ? "Suggest safer revision"
-                              : "Sign in to revise"}
+                              : incident.isDemo
+                                ? "Preview safer revision"
+                                : "Sign in to revise"}
                         </Button>
                       )}
                     </div>
@@ -1944,6 +2268,63 @@ export default function GraceGuardWorkspace() {
                   </div>
                 </div>
               </div>
+
+              {(() => {
+                const actionItems = ACTION_CHECKLISTS_BY_TYPE[incident.situationType];
+                const checklistKey = incident.id ?? scenarioValue;
+                const checked = checkedActionsByKey[checklistKey] ?? [];
+                return (
+                  <div className="mt-6 rounded-xl border border-border bg-card p-5 shadow-xs">
+                    <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <h2 className="font-semibold">
+                          First-60-minute action checklist · {incident.situationType}
+                        </h2>
+                        <p className="mt-0.5 text-xs text-muted-foreground">
+                          Operational safeguards tailored to this incident type.
+                        </p>
+                      </div>
+                      <Badge variant="outline">
+                        {checked.length} / {actionItems.length} completed
+                      </Badge>
+                    </div>
+                    <div className="grid gap-3 md:grid-cols-2">
+                      {actionItems.map((step, index) => {
+                        const isChecked = checked.includes(step);
+                        const stepId = `action-step-${index}`;
+                        return (
+                          <label
+                            key={step}
+                            htmlFor={stepId}
+                            className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3.5 py-2.5 text-sm transition-colors ${
+                              isChecked
+                                ? "border-success/40 bg-success/5 text-muted-foreground line-through"
+                                : "border-border hover:bg-muted/30"
+                            }`}
+                          >
+                            <Checkbox
+                              id={stepId}
+                              checked={isChecked}
+                              className="mt-0.5"
+                              onCheckedChange={(val) => {
+                                setCheckedActionsByKey((current) => {
+                                  const existing = current[checklistKey] ?? [];
+                                  const next =
+                                    val === true
+                                      ? [...existing, step]
+                                      : existing.filter((item) => item !== step);
+                                  return { ...current, [checklistKey]: next };
+                                });
+                              }}
+                            />
+                            <span>{step}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
             </TabsContent>
           ))}
         </Tabs>
@@ -2037,7 +2418,9 @@ export default function GraceGuardWorkspace() {
                   ? "Coaching…"
                   : session
                     ? "Coach with Muse Spark"
-                    : "Sign in for AI coach"}
+                    : incident.isDemo
+                      ? "Coach response (demo)"
+                      : "Sign in for AI coach"}
               </Button>
             </div>
             {sparringReview.length > 0 && (
@@ -2213,6 +2596,20 @@ export default function GraceGuardWorkspace() {
                       <SelectItem value="secure_messaging">Secure messaging</SelectItem>
                     </SelectContent>
                   </Select>
+                </div>
+                <div className="space-y-2 md:col-span-2">
+                  <Label htmlFor="counseling-referral">
+                    Licensed counseling & care referral directory
+                  </Label>
+                  <Input
+                    id="counseling-referral"
+                    value={profile.contactPreferences.counselingReferral ?? ""}
+                    onChange={(event) => updateContact("counselingReferral", event.target.value)}
+                    placeholder="e.g. Hope Care Counseling (555-0199) · care@church.org · 988 Lifeline"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Automatically included in Congregation Sunday addresses and exports.
+                  </p>
                 </div>
               </div>
             </div>
@@ -2647,11 +3044,12 @@ export default function GraceGuardWorkspace() {
                 </Badge>
               ) : (
                 <Badge variant="secondary" className="text-success">
-                  Saved
+                  {autoSaveStatus || "Saved"}
                 </Badge>
               )}
             </div>
             <div className="flex items-center gap-2">
+              <ThemeToggle />
               {ready && session ? (
                 <>
                   <span className="hidden max-w-[14rem] truncate text-xs text-muted-foreground sm:inline">
@@ -2670,6 +3068,69 @@ export default function GraceGuardWorkspace() {
               )}
             </div>
           </header>
+
+          {!session && showJudgeGuide && (
+            <div className="border-b border-border bg-muted/40 px-5 py-3 sm:px-8">
+              <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <Badge variant="secondary" className="font-semibold">
+                    60s Judge Walkthrough
+                  </Badge>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-7 text-xs"
+                    onClick={() => {
+                      chooseScenario("demo-pastor");
+                      setActiveView("incident");
+                    }}
+                  >
+                    1. See Safety Hold
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-7 text-xs"
+                    onClick={() => {
+                      setActiveView("incident");
+                      setWorkTab("layers");
+                    }}
+                  >
+                    2. Inspect 5 Layers
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-7 text-xs"
+                    onClick={() => setActiveView("drafts")}
+                  >
+                    3. Preview 4 Voices
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-7 text-xs"
+                    onClick={() => setActiveView("sparring")}
+                  >
+                    4. Spar Hard Questions
+                  </Button>
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 px-2 text-xs text-muted-foreground"
+                  onClick={() => setShowJudgeGuide(false)}
+                >
+                  Dismiss
+                </Button>
+              </div>
+            </div>
+          )}
 
           {activeView === "incident" && renderIncidentDesk()}
           {activeView === "drafts" && renderDraftStudio()}
