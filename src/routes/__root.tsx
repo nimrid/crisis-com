@@ -83,14 +83,33 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
       { title: "GraceGuard · Crisis Response Workspace" },
-      { name: "description", content: "A protected crisis-response workspace for churches and ministries." },
+      {
+        name: "description",
+        content: "A protected crisis-response workspace for churches and ministries.",
+      },
       { name: "author", content: "Lovable" },
       { property: "og:title", content: "GraceGuard · Crisis Response Workspace" },
-      { property: "og:description", content: "A protected crisis-response workspace for churches and ministries." },
+      {
+        property: "og:description",
+        content: "A protected crisis-response workspace for churches and ministries.",
+      },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
     ],
     links: [
+      {
+        rel: "preconnect",
+        href: "https://fonts.googleapis.com",
+      },
+      {
+        rel: "preconnect",
+        href: "https://fonts.gstatic.com",
+        crossOrigin: "anonymous",
+      },
+      {
+        rel: "stylesheet",
+        href: "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Newsreader:ital,opsz,wght@0,6..72,500;0,6..72,600;1,6..72,400&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap",
+      },
       {
         rel: "stylesheet",
         href: appCss,

@@ -18,6 +18,7 @@ export interface TimelineEntry {
 
 export interface IncidentRecord {
   id: string | null;
+  churchId?: string | null;
   isDemo: boolean;
   title: string;
   situationType: IncidentType;

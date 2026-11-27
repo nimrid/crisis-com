@@ -30,6 +30,7 @@ import {
   ShieldCheck,
   Sparkles,
   Trash2,
+  Users,
   X,
   type LucideIcon,
 } from "lucide-react";
@@ -67,6 +68,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { GraceGuardLogo } from "@/components/graceguard/logo";
 import { supabase } from "@/integrations/supabase/client";
 import { useCloudAuth } from "@/lib/auth-context";
 import {
@@ -103,14 +105,22 @@ import {
   type TimelineEntry,
 } from "@/lib/graceguard";
 import {
+  addChurchMember,
+  createChurchWorkspace,
   deleteCounselingNote,
   deleteIncidentRecord,
+  getChurchWorkspace,
+  getMonthlyApprovedCount,
   getTeamProfile,
+  listAudienceDrafts,
   listCounselingNotes,
   listIncidentRecords,
+  removeChurchMember,
+  saveAudienceDraft,
   saveCounselingNote,
   saveIncidentRecord,
   saveTeamProfile,
+  updateChurchMemberRole,
   updateCounselingNote,
 } from "@/lib/workspace.functions";
 import type { Database, Json } from "@/integrations/supabase/types";
@@ -134,6 +144,8 @@ interface VaultItem {
   note: string;
   created_at: string;
 }
+
+type ChurchWorkspaceData = Awaited<ReturnType<typeof getChurchWorkspace>>;
 
 const DEFAULT_TYPE: IncidentType = "Youth / Student Accident";
 const EMPTY_PROFILE: TeamProfileData = {
@@ -210,6 +222,7 @@ function rowToIncident(row: IncidentRow): IncidentRecord {
   const emergency = safety["emergencyStatus"];
   return {
     id: row.id,
+    churchId: row.church_id,
     isDemo: false,
     title: row.title,
     situationType: type,
@@ -258,6 +271,14 @@ export default function GraceGuardWorkspace() {
   const updateCounselingNoteFn = useServerFn(updateCounselingNote);
   const deleteCounselingNoteFn = useServerFn(deleteCounselingNote);
   const listCounselingNotesFn = useServerFn(listCounselingNotes);
+  const getChurchWorkspaceFn = useServerFn(getChurchWorkspace);
+  const createChurchWorkspaceFn = useServerFn(createChurchWorkspace);
+  const addChurchMemberFn = useServerFn(addChurchMember);
+  const updateChurchMemberRoleFn = useServerFn(updateChurchMemberRole);
+  const removeChurchMemberFn = useServerFn(removeChurchMember);
+  const listAudienceDraftsFn = useServerFn(listAudienceDrafts);
+  const saveAudienceDraftFn = useServerFn(saveAudienceDraft);
+  const getMonthlyApprovedCountFn = useServerFn(getMonthlyApprovedCount);
   const generateAudienceDraftFn = useServerFn(generateAudienceDraft);
   const reviseDraftForSafetyFn = useServerFn(reviseDraftForSafety);
   const triageIntakeNotesWithAIFn = useServerFn(triageIntakeNotesWithAI);
@@ -288,6 +309,19 @@ export default function GraceGuardWorkspace() {
   const [isRevising, setIsRevising] = useState(false);
   const [isSmartTriaging, setIsSmartTriaging] = useState(false);
   const [isCoachingSparring, setIsCoachingSparring] = useState(false);
+  const [isSavingDraft, setIsSavingDraft] = useState(false);
+  const [churchWorkspace, setChurchWorkspace] = useState<ChurchWorkspaceData>({
+    church: null,
+    members: [],
+    myRole: null,
+  });
+  const [monthlyApprovedCount, setMonthlyApprovedCount] = useState(0);
+  const [newChurchName, setNewChurchName] = useState("");
+  const [memberUserIdInput, setMemberUserIdInput] = useState("");
+  const [memberEmailInput, setMemberEmailInput] = useState("");
+  const [memberRoleInput, setMemberRoleInput] = useState<RecipientTier>("pastoral");
+  const [churchNotice, setChurchNotice] = useState("");
+  const [isUpdatingChurch, setIsUpdatingChurch] = useState(false);
   const [intakeStructured, setIntakeStructured] = useState("");
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [pendingScenario, setPendingScenario] = useState<string | null>(null);
@@ -329,14 +363,23 @@ export default function GraceGuardWorkspace() {
     if (!userId) {
       setProfile(EMPTY_PROFILE);
       setSavedRecords([]);
+      setChurchWorkspace({ church: null, members: [], myRole: null });
+      setMonthlyApprovedCount(0);
       return;
     }
     let active = true;
-    void Promise.all([getTeamProfileFn(), listIncidentRecordsFn()])
-      .then(([profileRow, rows]) => {
+    void Promise.all([
+      getTeamProfileFn(),
+      listIncidentRecordsFn(),
+      getChurchWorkspaceFn(),
+      getMonthlyApprovedCountFn(),
+    ])
+      .then(([profileRow, rows, churchData, monthly]) => {
         if (!active) return;
         setProfile(parseProfile(profileRow));
         setSavedRecords(rows);
+        setChurchWorkspace(churchData);
+        setMonthlyApprovedCount(monthly.count);
       })
       .catch(() => {
         if (active)
@@ -345,7 +388,49 @@ export default function GraceGuardWorkspace() {
     return () => {
       active = false;
     };
-  }, [userId, getTeamProfileFn, listIncidentRecordsFn]);
+  }, [
+    userId,
+    getTeamProfileFn,
+    listIncidentRecordsFn,
+    getChurchWorkspaceFn,
+    getMonthlyApprovedCountFn,
+  ]);
+
+  useEffect(() => {
+    if (!userId || !incident.id || incident.isDemo) return;
+    let active = true;
+    void listAudienceDraftsFn({ data: { incidentId: incident.id } })
+      .then((rows) => {
+        if (!active || rows.length === 0) return;
+        setDraftsByAudience((current) => {
+          const next = { ...current };
+          for (const row of rows) {
+            const audience = AUDIENCES.find((item) => item.id === row.audience)?.id;
+            if (!audience) continue;
+            const tier = RECIPIENT_TIERS.find((item) => item.id === row.recipient_tier)?.id;
+            next[audience] = {
+              text: row.draft_text,
+              origin: row.origin === "ai" || row.origin === "fictional" ? row.origin : "edited",
+              gate: {
+                recipientTier: tier ?? current[audience].gate.recipientTier,
+                confidentialityAcknowledged: row.confidentiality_acknowledged,
+              },
+              approval:
+                row.approved_by && row.approved_at
+                  ? { approvedBy: row.approved_by, approvedAt: row.approved_at }
+                  : null,
+            };
+          }
+          return next;
+        });
+      })
+      .catch(() => {
+        // Keep in-memory drafts if persisted drafts could not be loaded.
+      });
+    return () => {
+      active = false;
+    };
+  }, [userId, incident.id, incident.isDemo, listAudienceDraftsFn]);
 
   useEffect(() => {
     if (activeView !== "vault" || !userId || !incident.id || incident.isDemo) {
@@ -512,6 +597,7 @@ export default function GraceGuardWorkspace() {
       const saved = await saveIncidentRecordFn({
         data: {
           id: incident.id,
+          churchId: incident.churchId ?? churchWorkspace.church?.id ?? null,
           title: incident.title,
           situationType: incident.situationType,
           intakeNotes: incident.intakeNotes,
@@ -571,6 +657,7 @@ export default function GraceGuardWorkspace() {
     try {
       await saveTeamProfileFn({
         data: {
+          churchId: churchWorkspace.church?.id ?? null,
           churchName: profile.churchName,
           leadershipRoles: profile.leadershipRoles.filter(
             (entry) => entry.role.trim() || entry.name.trim(),
@@ -600,7 +687,13 @@ export default function GraceGuardWorkspace() {
     setIsSavingVault(true);
     setVaultNotice("");
     try {
-      await saveCounselingNoteFn({ data: { incidentId: incident.id, note: vaultDraft.trim() } });
+      await saveCounselingNoteFn({
+        data: {
+          incidentId: incident.id,
+          churchId: incident.churchId ?? churchWorkspace.church?.id ?? null,
+          note: vaultDraft.trim(),
+        },
+      });
       const notes = await listCounselingNotesFn({ data: { incidentId: incident.id } });
       setVaultNotes(
         notes.map((note) => ({ id: note.id, note: note.note, created_at: note.created_at })),
@@ -747,6 +840,35 @@ export default function GraceGuardWorkspace() {
     }
   }
 
+  async function persistAudienceDraft(audience: Audience, override?: Partial<AudienceDraftState>) {
+    if (!session || !incident.id || incident.isDemo) return;
+    const state = { ...draftsByAudience[audience], ...override };
+    setIsSavingDraft(true);
+    try {
+      await saveAudienceDraftFn({
+        data: {
+          incidentId: incident.id,
+          churchId: incident.churchId ?? churchWorkspace.church?.id ?? null,
+          audience,
+          draftText: state.text,
+          origin: state.origin,
+          recipientTier: state.gate.recipientTier,
+          confidentialityAcknowledged: state.gate.confidentialityAcknowledged,
+          approvedBy: state.approval?.approvedBy ?? null,
+          approvedAt: state.approval?.approvedAt ?? null,
+        },
+      });
+      const monthly = await getMonthlyApprovedCountFn();
+      setMonthlyApprovedCount(monthly.count);
+    } catch (error) {
+      setDraftError(
+        error instanceof Error ? error.message : "Could not persist this audience draft.",
+      );
+    } finally {
+      setIsSavingDraft(false);
+    }
+  }
+
   function approveCurrentDraft() {
     if (approvalBlockers.length > 0) return;
     const reviewer =
@@ -754,12 +876,93 @@ export default function GraceGuardWorkspace() {
       resolveSpokesperson(incident, profile) ||
       session?.user.email ||
       "Designated leader";
-    updateAudienceDraft(draftAudience, {
-      approval: { approvedBy: reviewer, approvedAt: new Date().toISOString() },
-    });
+    const approval = { approvedBy: reviewer, approvedAt: new Date().toISOString() };
+    updateAudienceDraft(draftAudience, { approval });
+    if (session && incident.id && !incident.isDemo) {
+      void persistAudienceDraft(draftAudience, { approval });
+    }
     setNotice(
       `Marked ${AUDIENCES.find((item) => item.id === draftAudience)?.label} draft approved for release.`,
     );
+  }
+
+  async function createChurch() {
+    if (!session || !newChurchName.trim()) return;
+    setIsUpdatingChurch(true);
+    setChurchNotice("");
+    try {
+      await createChurchWorkspaceFn({
+        data: { name: newChurchName.trim(), email: session.user.email ?? "" },
+      });
+      const updated = await getChurchWorkspaceFn();
+      setChurchWorkspace(updated);
+      if (updated.church) {
+        setProfile((current) => ({
+          ...current,
+          churchName: updated.church?.name ?? current.churchName,
+        }));
+      }
+      setNewChurchName("");
+      setChurchNotice("Church workspace created.");
+    } catch (error) {
+      setChurchNotice(
+        error instanceof Error ? error.message : "Could not create church workspace.",
+      );
+    } finally {
+      setIsUpdatingChurch(false);
+    }
+  }
+
+  async function addMemberToChurch() {
+    if (!session || !churchWorkspace.church) return;
+    setIsUpdatingChurch(true);
+    setChurchNotice("");
+    try {
+      await addChurchMemberFn({
+        data: {
+          churchId: churchWorkspace.church.id,
+          userId: memberUserIdInput.trim(),
+          email: memberEmailInput.trim(),
+          role: memberRoleInput,
+        },
+      });
+      setChurchWorkspace(await getChurchWorkspaceFn());
+      setMemberUserIdInput("");
+      setMemberEmailInput("");
+      setChurchNotice("Church member added.");
+    } catch (error) {
+      setChurchNotice(error instanceof Error ? error.message : "Could not add church member.");
+    } finally {
+      setIsUpdatingChurch(false);
+    }
+  }
+
+  async function changeMemberRole(memberId: string, role: RecipientTier) {
+    setIsUpdatingChurch(true);
+    setChurchNotice("");
+    try {
+      await updateChurchMemberRoleFn({ data: { memberId, role } });
+      setChurchWorkspace(await getChurchWorkspaceFn());
+      setChurchNotice("Member role updated.");
+    } catch (error) {
+      setChurchNotice(error instanceof Error ? error.message : "Could not update member role.");
+    } finally {
+      setIsUpdatingChurch(false);
+    }
+  }
+
+  async function deleteMemberFromChurch(memberId: string) {
+    setIsUpdatingChurch(true);
+    setChurchNotice("");
+    try {
+      await removeChurchMemberFn({ data: { memberId } });
+      setChurchWorkspace(await getChurchWorkspaceFn());
+      setChurchNotice("Member removed from church workspace.");
+    } catch (error) {
+      setChurchNotice(error instanceof Error ? error.message : "Could not remove member.");
+    } finally {
+      setIsUpdatingChurch(false);
+    }
   }
 
   function downloadDraft() {
@@ -886,31 +1089,60 @@ export default function GraceGuardWorkspace() {
   function renderSafetyInterlocks() {
     const publicBlockers = getDraftBlockers("press", incident, draftGate, profile);
     const profileSpokesperson = profile.contactPreferences.spokespersonName.trim();
+    const effectiveSpokesperson = resolveSpokesperson(incident, profile);
+    const clearedCount =
+      (incident.emergencyStatus !== "pending" ? 1 : 0) +
+      (incident.nextOfKinNotified ? 1 : 0) +
+      (incident.riskContactNotified ? 1 : 0) +
+      (effectiveSpokesperson ? 1 : 0);
+
     return (
-      <section className="border-y border-border bg-muted/30 px-5 py-6 sm:px-8">
+      <section className="border-y border-border bg-muted/40 px-5 py-6 sm:px-8">
         <div className="mx-auto max-w-6xl">
           <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-3">
-              <div className="grid h-10 w-10 place-items-center rounded-md bg-primary/10 text-primary">
+              <div
+                className={`grid h-10 w-10 place-items-center rounded-xl transition-colors ${
+                  publicBlockers.length === 0
+                    ? "bg-success/15 text-success"
+                    : "bg-primary/10 text-primary"
+                }`}
+              >
                 <ShieldCheck className="h-5 w-5" />
               </div>
               <div>
-                <h2 className="font-semibold">Pause & assess</h2>
+                <h2 className="font-semibold tracking-tight">Pause & assess</h2>
                 <p className="text-sm text-muted-foreground">
-                  Complete response checks before preparing outward messages.
+                  Complete all 4 response checks before preparing outward messages.
                 </p>
               </div>
             </div>
-            <Badge variant={publicBlockers.length === 0 ? "secondary" : "destructive"}>
-              {publicBlockers.length === 0
-                ? "Release checks clear"
-                : `${publicBlockers.length} hold${publicBlockers.length === 1 ? "" : "s"}`}
-            </Badge>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-medium text-muted-foreground">
+                {clearedCount} / 4 cleared
+              </span>
+              <Badge
+                variant={publicBlockers.length === 0 ? "secondary" : "outline"}
+                className={
+                  publicBlockers.length === 0
+                    ? "border border-success/30 bg-success/10 text-success"
+                    : "border-warning bg-warning/15 text-warning-foreground"
+                }
+              >
+                {publicBlockers.length === 0
+                  ? "Release checks clear"
+                  : `${publicBlockers.length} hold${publicBlockers.length === 1 ? "" : "s"}`}
+              </Badge>
+            </div>
           </div>
 
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-            <div className="space-y-2 border-l-2 border-primary pl-3">
-              <Label htmlFor="emergency-status" className="text-sm">
+            <div
+              className={`space-y-2 rounded-xl border bg-card p-4 shadow-xs transition-colors ${
+                incident.emergencyStatus !== "pending" ? "border-success/40" : "border-warning/60"
+              }`}
+            >
+              <Label htmlFor="emergency-status" className="text-sm font-medium">
                 Emergency services / 911
               </Label>
               <Select
@@ -929,9 +1161,13 @@ export default function GraceGuardWorkspace() {
                 </SelectContent>
               </Select>
             </div>
-            <div className="flex items-center justify-between gap-3 border-l-2 border-warning pl-3">
+            <div
+              className={`flex items-center justify-between gap-3 rounded-xl border bg-card p-4 shadow-xs transition-colors ${
+                incident.nextOfKinNotified ? "border-success/40" : "border-warning/60"
+              }`}
+            >
               <div>
-                <Label htmlFor="family-notified" className="text-sm">
+                <Label htmlFor="family-notified" className="text-sm font-medium">
                   Next of kin / parents
                 </Label>
                 <p className="mt-1 text-xs text-muted-foreground">
@@ -944,9 +1180,13 @@ export default function GraceGuardWorkspace() {
                 onCheckedChange={(checked) => updateIncident("nextOfKinNotified", checked)}
               />
             </div>
-            <div className="flex items-center justify-between gap-3 border-l-2 border-warning pl-3">
+            <div
+              className={`flex items-center justify-between gap-3 rounded-xl border bg-card p-4 shadow-xs transition-colors ${
+                incident.riskContactNotified ? "border-success/40" : "border-warning/60"
+              }`}
+            >
               <div>
-                <Label htmlFor="risk-contacted" className="text-sm">
+                <Label htmlFor="risk-contacted" className="text-sm font-medium">
                   Legal / insurer risk contact
                 </Label>
                 <p className="mt-1 text-xs text-muted-foreground">
@@ -959,8 +1199,12 @@ export default function GraceGuardWorkspace() {
                 onCheckedChange={(checked) => updateIncident("riskContactNotified", checked)}
               />
             </div>
-            <div className="space-y-2 border-l-2 border-primary pl-3">
-              <Label htmlFor="spokesperson" className="text-sm">
+            <div
+              className={`space-y-2 rounded-xl border bg-card p-4 shadow-xs transition-colors ${
+                effectiveSpokesperson ? "border-success/40" : "border-warning/60"
+              }`}
+            >
+              <Label htmlFor="spokesperson" className="text-sm font-medium">
                 Designated spokesperson
               </Label>
               <Input
@@ -980,7 +1224,7 @@ export default function GraceGuardWorkspace() {
           </div>
           {publicBlockers.length > 0 && (
             <div
-              className="mt-5 flex items-start gap-2 border-l-2 border-destructive px-3 py-2 text-sm text-destructive"
+              className="mt-4 flex items-start gap-2.5 rounded-lg border border-warning/40 bg-warning/10 px-4 py-2.5 text-sm text-warning-foreground"
               role="status"
             >
               <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
@@ -1118,8 +1362,8 @@ export default function GraceGuardWorkspace() {
               <TabsTrigger value="layers">Information layers</TabsTrigger>
             </TabsList>
             <TabsContent value="intake" className="mt-6">
-              <div className="grid gap-8 lg:grid-cols-[1.05fr_0.95fr]">
-                <div className="space-y-4">
+              <div className="grid gap-6 lg:grid-cols-[1.05fr_0.95fr]">
+                <div className="space-y-4 rounded-xl border border-border bg-card p-5 shadow-xs">
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <h2 className="font-semibold">Notes and voice-memo text</h2>
@@ -1128,7 +1372,9 @@ export default function GraceGuardWorkspace() {
                         overwriting existing layer edits.
                       </p>
                     </div>
-                    <Mic className="h-5 w-5 text-muted-foreground" aria-hidden="true" />
+                    <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-muted text-muted-foreground">
+                      <Mic className="h-4 w-4" aria-hidden="true" />
+                    </div>
                   </div>
                   <Textarea
                     value={incident.intakeNotes}
@@ -1162,7 +1408,7 @@ export default function GraceGuardWorkspace() {
                     </p>
                   )}
                 </div>
-                <div className="space-y-5">
+                <div className="space-y-5 rounded-xl border border-border bg-card p-5 shadow-xs">
                   <div>
                     <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                       <div className="flex items-center gap-2">
@@ -1180,7 +1426,11 @@ export default function GraceGuardWorkspace() {
                             key={`timeline-${index}`}
                             className="relative space-y-2 border-b border-border/60 pb-3 last:border-b-0"
                           >
-                            <span className="absolute -left-[1.53rem] top-2 grid h-3 w-3 place-items-center rounded-full border border-background bg-primary" />
+                            <span
+                              className={`absolute -left-[1.53rem] top-2 grid h-3 w-3 place-items-center rounded-full border border-background ${
+                                entry.verified ? "bg-success" : "bg-warning"
+                              }`}
+                            />
                             <div className="flex flex-wrap items-center gap-2">
                               <Input
                                 aria-label={`Timeline ${index + 1} time`}
@@ -1365,15 +1615,20 @@ export default function GraceGuardWorkspace() {
               red-line flags, and mark each audience approved before release.
             </p>
           </div>
-          <Badge
-            variant={approvedCount === 4 ? "secondary" : "outline"}
-            className="border-warning text-warning-foreground"
-          >
-            {approvedCount} / 4 audiences approved
-          </Badge>
+          <div className="flex flex-wrap gap-2">
+            {session && (
+              <Badge variant="outline">This month: {monthlyApprovedCount} finalized</Badge>
+            )}
+            <Badge
+              variant={approvedCount === 4 ? "secondary" : "outline"}
+              className="border-warning text-warning-foreground"
+            >
+              {approvedCount} / 4 audiences approved
+            </Badge>
+          </div>
         </div>
 
-        <div className="mb-6 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="mb-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           {AUDIENCES.map((item) => {
             const state = draftsByAudience[item.id];
             const blockers = getDraftBlockers(item.id, incident, state.gate, profile);
@@ -1392,20 +1647,23 @@ export default function GraceGuardWorkspace() {
                   setDraftAudience(item.id);
                   setDraftError("");
                 }}
-                className={`flex items-center justify-between rounded-md border px-3 py-2 text-left text-xs transition-colors ${
+                className={`flex items-center justify-between gap-3 rounded-xl border bg-card px-4 py-3 text-left shadow-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                   draftAudience === item.id
-                    ? "border-primary bg-muted/60"
-                    : "border-border hover:bg-muted/30"
+                    ? "border-primary bg-accent/50"
+                    : "border-border hover:bg-muted/40"
                 }`}
               >
-                <span className="font-medium text-foreground">{item.label}</span>
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-semibold text-foreground">{item.label}</p>
+                  <p className="truncate text-xs text-muted-foreground">{item.detail}</p>
+                </div>
                 <Badge
                   variant={state.approval ? "secondary" : "outline"}
                   className={
                     state.approval
-                      ? "text-success"
+                      ? "border border-success/30 bg-success/10 text-success"
                       : blockers.length > 0
-                        ? "border-warning text-warning-foreground"
+                        ? "border-warning bg-warning/15 text-warning-foreground"
                         : ""
                   }
                 >
@@ -1527,6 +1785,16 @@ export default function GraceGuardWorkspace() {
                     </Button>
                     {draftText && (
                       <>
+                        {session && incident.id && !incident.isDemo && (
+                          <Button
+                            variant="outline"
+                            onClick={() => void persistAudienceDraft(draftAudience)}
+                            disabled={isSavingDraft}
+                          >
+                            {isSavingDraft ? <LoaderCircle className="animate-spin" /> : <Save />}
+                            Save draft
+                          </Button>
+                        )}
                         <Button variant="outline" onClick={() => void copyDraft()}>
                           <Copy /> Copy formatted
                         </Button>
@@ -1545,11 +1813,18 @@ export default function GraceGuardWorkspace() {
                   </p>
                 </div>
 
-                <div className="border-t border-border pt-5 xl:border-l xl:border-t-0 xl:pl-7 xl:pt-0">
+                <div className="rounded-xl border border-border bg-card p-5 shadow-xs">
                   <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                     <div className="flex items-center gap-2">
                       <FileText className="h-4 w-4 text-primary" />
                       <h3 className="font-semibold">Working draft</h3>
+                      {draftText.trim() && (
+                        <span className="text-xs text-muted-foreground">
+                          · {draftText.trim().split(/\s+/).length} words
+                          {(item.id === "staff" || item.id === "congregation") &&
+                            ` (~${Math.max(5, Math.round((draftText.trim().split(/\s+/).length / 130) * 60))}s spoken)`}
+                        </span>
+                      )}
                     </div>
                     <Badge
                       variant={
@@ -1628,7 +1903,12 @@ export default function GraceGuardWorkspace() {
                         <Button
                           size="sm"
                           variant="outline"
-                          onClick={() => updateAudienceDraft(draftAudience, { approval: null })}
+                          onClick={() => {
+                            updateAudienceDraft(draftAudience, { approval: null });
+                            if (session && incident.id && !incident.isDemo) {
+                              void persistAudienceDraft(draftAudience, { approval: null });
+                            }
+                          }}
                         >
                           Revoke approval
                         </Button>
@@ -1687,15 +1967,31 @@ export default function GraceGuardWorkspace() {
           </p>
         </div>
         <div className="grid gap-8 lg:grid-cols-[0.85fr_1.15fr]">
-          <div className="border-y border-border py-6">
-            <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-muted-foreground">
-              <Megaphone className="h-4 w-4" /> Question {safeIndex + 1} of{" "}
-              {sparringQuestions.length}
+          <div className="flex flex-col justify-between rounded-xl border border-border bg-card p-6 shadow-xs">
+            <div>
+              <div className="mb-4 flex items-center justify-between gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <span className="flex items-center gap-2">
+                  <Megaphone className="h-4 w-4 text-primary" /> Question {safeIndex + 1} of{" "}
+                  {sparringQuestions.length}
+                </span>
+                <div className="flex gap-1">
+                  {sparringQuestions.map((_, dotIndex) => (
+                    <span
+                      key={`dot-${dotIndex}`}
+                      className={`h-1.5 w-4 rounded-full transition-colors ${
+                        dotIndex === safeIndex ? "bg-primary" : "bg-muted"
+                      }`}
+                    />
+                  ))}
+                </div>
+              </div>
+              <blockquote className="font-serif text-2xl leading-snug text-foreground">
+                “{question}”
+              </blockquote>
             </div>
-            <blockquote className="font-serif text-2xl leading-snug">“{question}”</blockquote>
             <Button
               variant="outline"
-              className="mt-6"
+              className="mt-6 self-start"
               onClick={() => {
                 setSparringIndex((current) => (current + 1) % sparringQuestions.length);
                 setSparringResponse("");
@@ -1705,9 +2001,15 @@ export default function GraceGuardWorkspace() {
               Next challenge <ChevronRight />
             </Button>
           </div>
-          <div className="space-y-4">
+          <div className="space-y-4 rounded-xl border border-border bg-card p-6 shadow-xs">
             <div>
-              <Label htmlFor="sparring-response">Your spoken response</Label>
+              <div className="flex items-center justify-between gap-2">
+                <Label htmlFor="sparring-response">Your spoken response</Label>
+                <span className="text-xs text-muted-foreground">
+                  {sparringResponse.trim() ? sparringResponse.trim().split(/\s+/).length : 0} / 75
+                  words target
+                </span>
+              </div>
               <Textarea
                 id="sparring-response"
                 value={sparringResponse}
@@ -1924,6 +2226,180 @@ export default function GraceGuardWorkspace() {
                 </p>
               )}
             </div>
+
+            <div className="border-t border-border pt-6">
+              <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h2 className="flex items-center gap-2 font-semibold">
+                    <Users className="h-4 w-4 text-primary" /> Church workspace & team memberships
+                  </h2>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Share incidents, profiles, and saved drafts with authorized members. Layer 5
+                    counseling notes remain restricted to owners, executive, and pastoral roles.
+                  </p>
+                </div>
+                {churchWorkspace.myRole && (
+                  <Badge variant="secondary">Your role: {churchWorkspace.myRole}</Badge>
+                )}
+              </div>
+
+              <div className="mb-5 flex flex-wrap items-center gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                <span>Your User ID:</span>
+                <code className="font-mono text-foreground">{session.user.id}</code>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="h-6 px-2 text-xs"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(session.user.id);
+                    setChurchNotice("User ID copied.");
+                  }}
+                >
+                  <Copy className="h-3 w-3" /> Copy ID
+                </Button>
+              </div>
+
+              {!churchWorkspace.church ? (
+                <div className="flex flex-wrap items-end gap-3">
+                  <div className="min-w-[240px] flex-1 space-y-2">
+                    <Label htmlFor="new-church-name">Create a shared church workspace</Label>
+                    <Input
+                      id="new-church-name"
+                      value={newChurchName}
+                      onChange={(event) => setNewChurchName(event.target.value)}
+                      placeholder={profile.churchName || "e.g. Grace Community Church"}
+                    />
+                  </div>
+                  <Button
+                    type="button"
+                    onClick={() => void createChurch()}
+                    disabled={isUpdatingChurch || !newChurchName.trim()}
+                  >
+                    {isUpdatingChurch ? <LoaderCircle className="animate-spin" /> : <Plus />} Create
+                    workspace
+                  </Button>
+                </div>
+              ) : (
+                <div className="space-y-5">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-3">
+                    <div>
+                      <p className="text-xs uppercase text-muted-foreground">Active workspace</p>
+                      <p className="font-semibold">{churchWorkspace.church.name}</p>
+                    </div>
+                    <Badge variant="outline">
+                      {churchWorkspace.members.length} member
+                      {churchWorkspace.members.length === 1 ? "" : "s"}
+                    </Badge>
+                  </div>
+
+                  <div className="space-y-2">
+                    {churchWorkspace.members.map((member) => {
+                      const isCreator = churchWorkspace.church?.created_by === session.user.id;
+                      const isSelf = member.user_id === session.user.id;
+                      return (
+                        <div
+                          key={member.id}
+                          className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border px-3 py-2 text-sm"
+                        >
+                          <div className="min-w-0">
+                            <p className="truncate font-medium">
+                              {member.email} {isSelf ? "(you)" : ""}
+                            </p>
+                            <p className="truncate font-mono text-xs text-muted-foreground">
+                              {member.user_id}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {isCreator && !isSelf ? (
+                              <>
+                                <Select
+                                  value={member.role}
+                                  onValueChange={(value) =>
+                                    void changeMemberRole(member.id, value as RecipientTier)
+                                  }
+                                >
+                                  <SelectTrigger className="h-8 w-36">
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {RECIPIENT_TIERS.map((tier) => (
+                                      <SelectItem key={tier.id} value={tier.id}>
+                                        {tier.label}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                                <Button
+                                  type="button"
+                                  size="icon"
+                                  variant="ghost"
+                                  className="h-8 w-8 text-destructive"
+                                  aria-label={`Remove ${member.email}`}
+                                  onClick={() => void deleteMemberFromChurch(member.id)}
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </Button>
+                              </>
+                            ) : (
+                              <Badge variant="outline">{member.role}</Badge>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {churchWorkspace.church.created_by === session.user.id && (
+                    <div className="grid gap-3 border-t border-border pt-4 sm:grid-cols-[1fr_1fr_11rem_auto]">
+                      <Input
+                        aria-label="Member User ID"
+                        value={memberUserIdInput}
+                        onChange={(event) => setMemberUserIdInput(event.target.value)}
+                        placeholder="Teammate User ID (UUID)"
+                      />
+                      <Input
+                        aria-label="Member email"
+                        type="email"
+                        value={memberEmailInput}
+                        onChange={(event) => setMemberEmailInput(event.target.value)}
+                        placeholder="teammate@church.org"
+                      />
+                      <Select
+                        value={memberRoleInput}
+                        onValueChange={(value) => setMemberRoleInput(value as RecipientTier)}
+                      >
+                        <SelectTrigger aria-label="Member role">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {RECIPIENT_TIERS.map((tier) => (
+                            <SelectItem key={tier.id} value={tier.id}>
+                              {tier.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Button
+                        type="button"
+                        onClick={() => void addMemberToChurch()}
+                        disabled={
+                          isUpdatingChurch || !memberUserIdInput.trim() || !memberEmailInput.trim()
+                        }
+                      >
+                        <Plus /> Add member
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {churchNotice && (
+                <p className="mt-3 text-sm text-muted-foreground" role="status">
+                  {churchNotice}
+                </p>
+              )}
+            </div>
           </div>
         )}
       </section>
@@ -1931,6 +2407,11 @@ export default function GraceGuardWorkspace() {
   }
 
   function renderVault() {
+    const restrictedByChurchRole = Boolean(
+      churchWorkspace.myRole &&
+      churchWorkspace.myRole !== "executive" &&
+      churchWorkspace.myRole !== "pastoral",
+    );
     return (
       <section className="mx-auto max-w-5xl px-5 py-7 sm:px-8">
         <div className="mb-7 flex items-start gap-4">
@@ -1946,6 +2427,12 @@ export default function GraceGuardWorkspace() {
               Confessional, therapy, marital counseling, and addiction notes remain here. They are
               stored separately and are never sent to AI drafting.
             </p>
+            {restrictedByChurchRole && (
+              <p className="mt-2 text-xs text-warning-foreground">
+                Your church role is "{churchWorkspace.myRole}". Shared church counseling notes are
+                restricted to executive and pastoral roles (owners still see their own notes).
+              </p>
+            )}
           </div>
         </div>
         {!session ? (
@@ -2074,50 +2561,95 @@ export default function GraceGuardWorkspace() {
   }
 
   const currentNav = NAV_ITEMS.find((item) => item.id === activeView) ?? NAV_ITEMS[0];
+  const publicHoldsCount = getDraftBlockers("press", incident, draftGate, profile).length;
   return (
     <main className="min-h-screen bg-background text-foreground">
-      <div className="min-h-screen lg:grid lg:grid-cols-[15rem_minmax(0,1fr)]">
-        <aside className="border-b border-border bg-muted/20 lg:min-h-screen lg:border-b-0 lg:border-r">
-          <div className="flex items-center gap-3 border-b border-border px-5 py-5">
-            <div className="grid h-10 w-10 place-items-center rounded-md bg-primary text-primary-foreground">
-              <ShieldCheck className="h-5 w-5" />
-            </div>
+      <div className="min-h-screen lg:grid lg:grid-cols-[16rem_minmax(0,1fr)]">
+        <aside className="flex flex-col border-b border-sidebar-border bg-sidebar text-sidebar-foreground lg:min-h-screen lg:border-b-0 lg:border-r">
+          <Link
+            to="/"
+            className="flex items-center gap-3 border-b border-sidebar-border px-5 py-5 transition-colors hover:bg-sidebar-accent/40"
+          >
+            <GraceGuardLogo className="h-10 w-10 shrink-0" />
             <div>
-              <p className="font-serif text-lg font-semibold">GraceGuard</p>
+              <p className="font-serif text-xl font-semibold tracking-tight">GraceGuard</p>
               <p className="text-xs text-muted-foreground">Crisis response desk</p>
             </div>
-          </div>
-          <nav aria-label="Workspace" className="flex gap-1 overflow-x-auto px-3 py-3 lg:flex-col">
+          </Link>
+          <nav
+            aria-label="Workspace"
+            className="flex gap-1 overflow-x-auto px-3 py-3 lg:flex-1 lg:flex-col"
+          >
             {NAV_ITEMS.map((item) => {
               const Icon = item.icon;
+              const badgeText =
+                item.id === "incident" && publicHoldsCount > 0
+                  ? `${publicHoldsCount} hold${publicHoldsCount === 1 ? "" : "s"}`
+                  : item.id === "drafts"
+                    ? `${approvedCount}/4`
+                    : null;
               return (
                 <Button
                   key={item.id}
                   variant={activeView === item.id ? "secondary" : "ghost"}
-                  className="justify-start whitespace-nowrap"
+                  className={`justify-between whitespace-nowrap ${
+                    activeView === item.id ? "font-semibold shadow-xs" : "text-muted-foreground"
+                  }`}
                   onClick={() => setActiveView(item.id)}
                 >
-                  <Icon /> {item.label}
+                  <span className="flex items-center gap-2">
+                    <Icon className="h-4 w-4" /> {item.label}
+                  </span>
+                  {badgeText && (
+                    <Badge
+                      variant="outline"
+                      className={`ml-2 text-[10px] ${
+                        item.id === "incident" && publicHoldsCount > 0
+                          ? "border-warning text-warning-foreground"
+                          : ""
+                      }`}
+                    >
+                      {badgeText}
+                    </Badge>
+                  )}
                 </Button>
               );
             })}
           </nav>
-          <div className="hidden border-t border-border px-5 py-5 text-xs text-muted-foreground lg:block">
-            <div className="mb-2 flex items-center gap-2 text-foreground">
-              <LockKeyhole className="h-4 w-4" /> Privacy first
+          <div className="hidden border-t border-sidebar-border px-4 py-4 lg:block">
+            <div className="rounded-xl border border-border bg-card p-3.5 text-xs text-muted-foreground shadow-xs">
+              <div className="mb-1.5 flex items-center gap-2 font-medium text-foreground">
+                <LockKeyhole className="h-3.5 w-3.5 text-primary" /> Counseling Firewall
+              </div>
+              Layer 5 is physically isolated. Drafts include only whitelisted facts and guidance.
             </div>
-            Layer 5 is physically separate. Drafts include only whitelisted facts and guidance.
           </div>
         </aside>
 
         <div className="min-w-0">
-          <header className="flex min-h-16 flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-3 sm:px-8">
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <header className="sticky top-0 z-20 flex min-h-16 flex-wrap items-center justify-between gap-3 border-b border-border bg-background/95 px-5 py-3 backdrop-blur-xs sm:px-8">
+            <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
               <span>{currentNav?.label ?? "Workspace"}</span>
               <ChevronRight className="h-4 w-4" />
               <span className="max-w-[14rem] truncate font-medium text-foreground">
                 {incident.title}
               </span>
+              {incident.isDemo ? (
+                <Badge
+                  variant="outline"
+                  className="border-warning/60 bg-warning/10 text-warning-foreground"
+                >
+                  Fictional demo
+                </Badge>
+              ) : hasUnsavedChanges ? (
+                <Badge variant="outline" className="border-warning/60 text-warning-foreground">
+                  Unsaved
+                </Badge>
+              ) : (
+                <Badge variant="secondary" className="text-success">
+                  Saved
+                </Badge>
+              )}
             </div>
             <div className="flex items-center gap-2">
               {ready && session ? (
